@@ -115,55 +115,110 @@ object Mp4DvPatcher {
     private fun fourcc(b: ByteArray, o: Int): String = String(b, o, 4, Charsets.US_ASCII)
 }
 
+/** Everything the streaming proxy needs to neutralize DV in an MKV. */
+class MkvMeta(
+    val patches: List<Patch>,
+    val firstClusterOffset: Long,
+    val videoTrackNumber: Long,
+    val nalLengthSize: Int
+)
+
 object MkvDvPatcher {
 
     private const val ID_SEGMENT = 0x18538067L
     private const val ID_TRACKS = 0x1654AE6BL
     private const val ID_TRACK_ENTRY = 0xAEL
+    private const val ID_TRACK_NUMBER = 0xD7L
+    private const val ID_TRACK_TYPE = 0x83L
+    private const val ID_CODEC_ID = 0x86L
+    private const val ID_CODEC_PRIVATE = 0x63A2L
     private const val ID_BLOCK_ADDITION_MAPPING = 0x41E4L
-    private const val ID_CLUSTER = 0x1F43B675L
+    const val ID_CLUSTER = 0x1F43B675L
     private val DV_FOURCCS = listOf("dvcC", "dvvC", "dvwC")
 
-    /** Scan the header region (max ~8MB) for Tracks and void DV BlockAdditionMapping elements. */
-    fun findPatches(src: RandomAccessSource): List<Patch> {
+    fun findPatches(src: RandomAccessSource): List<Patch> = analyze(src)?.patches ?: emptyList()
+
+    /**
+     * Scan the header region (max ~8MB): void DV BlockAdditionMapping elements, locate the
+     * HEVC video track (number + NAL length-prefix size from hvcC) and the first Cluster.
+     */
+    fun analyze(src: RandomAccessSource): MkvMeta? {
         val head = src.readFully(0, minOf(src.length, 8L * 1024 * 1024).toInt())
         val r = Reader(head)
 
         // EBML header element, then Segment.
-        val ebmlId = r.readId() ?: return emptyList()
-        if (ebmlId != 0x1A45DFA3L) return emptyList()
-        val ebmlSize = r.readSize() ?: return emptyList()
+        val ebmlId = r.readId() ?: return null
+        if (ebmlId != 0x1A45DFA3L) return null
+        val ebmlSize = r.readSize() ?: return null
         r.pos += ebmlSize.toInt()
 
-        val segId = r.readId() ?: return emptyList()
-        if (segId != ID_SEGMENT) return emptyList()
-        r.readSize() ?: return emptyList() // often "unknown size"; children follow either way
+        val segId = r.readId() ?: return null
+        if (segId != ID_SEGMENT) return null
+        r.readSize() ?: return null // often "unknown size"; children follow either way
+
+        val patches = mutableListOf<Patch>()
+        var videoTrack = -1L
+        var nalLengthSize = 4
+        var firstCluster = -1L
 
         while (r.pos < head.size - 2) {
             val elementStart = r.pos
             val id = r.readId() ?: break
             val size = r.readSize() ?: break
-            if (id == ID_CLUSTER) break
+            if (id == ID_CLUSTER) {
+                firstCluster = elementStart.toLong()
+                break
+            }
             if (id == ID_TRACKS) {
-                val patches = mutableListOf<Patch>()
-                voidDvMappings(head, r.pos, minOf(r.pos + size.toInt(), head.size), patches)
-                return patches
+                val end = minOf(r.pos + size.toInt(), head.size)
+                val tr = Reader(head).apply { pos = r.pos }
+                while (tr.pos < end - 2) {
+                    val teId = tr.readId() ?: break
+                    val teSize = tr.readSize() ?: break
+                    val teStart = tr.pos
+                    if (teId == ID_TRACK_ENTRY) {
+                        parseTrackEntry(head, teStart, teStart + teSize.toInt(), patches)?.let { (num, lenSize) ->
+                            if (videoTrack < 0) {
+                                videoTrack = num
+                                nalLengthSize = lenSize
+                            }
+                        }
+                    }
+                    tr.pos = teStart + teSize.toInt()
+                }
             }
             if (size < 0 || elementStart + size > head.size) break
             r.pos += size.toInt()
         }
-        return emptyList()
+        if (firstCluster < 0) return null
+        return MkvMeta(patches, firstCluster, videoTrack, nalLengthSize)
     }
 
-    private fun voidDvMappings(buf: ByteArray, from: Int, to: Int, out: MutableList<Patch>) {
+    /** Returns (trackNumber, nalLengthSize) when this entry is the HEVC video track. */
+    private fun parseTrackEntry(
+        buf: ByteArray,
+        from: Int,
+        to: Int,
+        out: MutableList<Patch>
+    ): Pair<Long, Int>? {
         val r = Reader(buf).apply { pos = from }
-        while (r.pos < to - 2) {
+        var number = -1L
+        var type = -1L
+        var codecId = ""
+        var nalLengthSize = 4
+        while (r.pos < to - 1) {
             val id = r.readId() ?: break
             val size = r.readSize() ?: break
             val contentStart = r.pos
             if (contentStart + size > to) break
             when (id) {
-                ID_TRACK_ENTRY -> voidDvMappings(buf, contentStart, contentStart + size.toInt(), out)
+                ID_TRACK_NUMBER -> number = readUint(buf, contentStart, size.toInt())
+                ID_TRACK_TYPE -> type = readUint(buf, contentStart, size.toInt())
+                ID_CODEC_ID -> codecId = String(buf, contentStart, size.toInt(), Charsets.US_ASCII).trimEnd(' ')
+                ID_CODEC_PRIVATE -> if (size >= 23) {
+                    // hvcC: lengthSizeMinusOne lives in the low 2 bits of byte 21.
+                    nalLengthSize = ((buf[contentStart + 21].toInt() and 0x03) + 1)
+                }
                 ID_BLOCK_ADDITION_MAPPING -> {
                     val content = String(buf, contentStart, size.toInt(), Charsets.ISO_8859_1)
                     if (DV_FOURCCS.any { content.contains(it) }) {
@@ -173,6 +228,15 @@ object MkvDvPatcher {
             }
             r.pos = contentStart + size.toInt()
         }
+        return if (type == 1L && codecId.startsWith("V_MPEGH/ISO/HEVC") && number > 0) {
+            Pair(number, nalLengthSize)
+        } else null
+    }
+
+    private fun readUint(buf: ByteArray, off: Int, len: Int): Long {
+        var v = 0L
+        for (i in 0 until len) v = (v shl 8) or (buf[off + i].toLong() and 0xFF)
+        return v
     }
 
     /** Element start = content start minus (id length + size-field length), recomputed exactly. */

@@ -98,22 +98,32 @@ class InterceptActivity : AppCompatActivity() {
                     val isMp4 = container.contains("mp4") || container.contains("mov")
                     val isMkv = container.contains("matroska")
                     if (isMp4 || isMkv) {
-                        // Pass-through mode: compute same-size byte patches that neutralize
-                        // the container's DV signaling, then serve the file byte-identical
-                        // with full Range support — native seeking and real duration.
+                        // Pass-through mode: serve the file byte-identical with full Range
+                        // support (native seeking, real duration) while neutralizing DV —
+                        // container signaling patches for MP4/MKV, plus in-flight RPU NAL
+                        // rewriting for MKV (some TV decoders auto-engage DV from RPUs alone).
                         val prepared = withContext(Dispatchers.IO) {
                             runCatching {
                                 val src = Sources.forUri(this@InterceptActivity, uri)
-                                val patches = if (isMp4) Mp4DvPatcher.findPatches(src)
-                                else MkvDvPatcher.findPatches(src)
-                                Pair(patches, src.length)
+                                if (isMp4) Triple(Mp4DvPatcher.findPatches(src), src.length, null as MkvMeta?)
+                                else {
+                                    val meta = MkvDvPatcher.analyze(src)
+                                    Triple(meta?.patches ?: emptyList(), src.length, meta)
+                                }
                             }.onFailure { Log.e("DVStrip", "patch analysis failed", it) }.getOrNull()
                         }
                         if (isFinishing) return@launch
-                        if (prepared != null && prepared.second > 0) {
+                        if (prepared != null && prepared.second > 0 && (isMp4 || prepared.third != null)) {
                             val ext = if (isMp4) "mp4" else "mkv"
-                            Log.i("DVStrip", "patch mode: ${prepared.first.size} patches, len=${prepared.second}")
-                            ProxyService.startPatch(this@InterceptActivity, uri, prepared.first, prepared.second, ext)
+                            Log.i(
+                                "DVStrip",
+                                "patch mode: ${prepared.first.size} patches, len=${prepared.second}, " +
+                                    "rpuRewrite=${prepared.third != null}"
+                            )
+                            ProxyService.startPatch(
+                                this@InterceptActivity, uri,
+                                prepared.first, prepared.second, ext, prepared.third
+                            )
                             if (waitForProxyPort()) {
                                 forward(
                                     Uri.parse(ProxyService.mediaUrl(ext)),

@@ -49,6 +49,9 @@ class ProxyService : Service() {
         const val EXTRA_PATCHES = "patches"
         const val EXTRA_LENGTH = "length"
         const val EXTRA_EXT = "ext"
+        const val EXTRA_MKV_FIRST_CLUSTER = "mkvFirstCluster"
+        const val EXTRA_MKV_VIDEO_TRACK = "mkvVideoTrack"
+        const val EXTRA_MKV_NAL_LEN = "mkvNalLen"
         const val MODE_PATCH = "patch"
         const val MODE_HLS = "hls"
         const val ACTION_STOP = "com.dvstrip.player.STOP_PROXY"
@@ -73,13 +76,25 @@ class ProxyService : Service() {
             startFg(context, i)
         }
 
-        fun startPatch(context: Context, sourceUri: Uri, patches: List<Patch>, length: Long, ext: String) {
+        fun startPatch(
+            context: Context,
+            sourceUri: Uri,
+            patches: List<Patch>,
+            length: Long,
+            ext: String,
+            mkvMeta: MkvMeta?
+        ) {
             val i = Intent(context, ProxyService::class.java)
                 .putExtra(EXTRA_MODE, MODE_PATCH)
                 .putExtra(EXTRA_SOURCE, sourceUri.toString())
                 .putExtra(EXTRA_PATCHES, encodePatches(patches))
                 .putExtra(EXTRA_LENGTH, length)
                 .putExtra(EXTRA_EXT, ext)
+            if (mkvMeta != null) {
+                i.putExtra(EXTRA_MKV_FIRST_CLUSTER, mkvMeta.firstClusterOffset)
+                    .putExtra(EXTRA_MKV_VIDEO_TRACK, mkvMeta.videoTrackNumber)
+                    .putExtra(EXTRA_MKV_NAL_LEN, mkvMeta.nalLengthSize)
+            }
             startFg(context, i)
         }
 
@@ -115,7 +130,8 @@ class ProxyService : Service() {
         val source: StreamableSource,
         val patches: List<Patch>,
         val length: Long,
-        val ext: String
+        val ext: String,
+        val mkvMeta: MkvMeta?
     )
 
     private var server: ProxyServer? = null
@@ -155,13 +171,21 @@ class ProxyService : Service() {
         when (intent.getStringExtra(EXTRA_MODE)) {
             MODE_PATCH -> {
                 val patches = decodePatches(intent.getByteArrayExtra(EXTRA_PATCHES) ?: ByteArray(4))
+                val firstCluster = intent.getLongExtra(EXTRA_MKV_FIRST_CLUSTER, -1)
+                val mkvMeta = if (firstCluster >= 0) MkvMeta(
+                    patches,
+                    firstCluster,
+                    intent.getLongExtra(EXTRA_MKV_VIDEO_TRACK, -1),
+                    intent.getIntExtra(EXTRA_MKV_NAL_LEN, 4)
+                ) else null
                 patchState = PatchState(
                     Sources.forUri(this, Uri.parse(source)),
                     patches,
                     intent.getLongExtra(EXTRA_LENGTH, -1),
-                    intent.getStringExtra(EXTRA_EXT) ?: "mkv"
+                    intent.getStringExtra(EXTRA_EXT) ?: "mkv",
+                    mkvMeta
                 )
-                Log.i(TAG, "patch proxy: ${patches.size} patches, length=${patchState!!.length}")
+                Log.i(TAG, "patch proxy: ${patches.size} patches, length=${patchState!!.length}, rpuRewrite=${mkvMeta != null}")
             }
             MODE_HLS -> {
                 val sessionId = intent.getStringExtra(EXTRA_SESSION_ID) ?: return START_NOT_STICKY
@@ -273,9 +297,11 @@ class ProxyService : Service() {
             val count = end - start + 1
             Log.i(TAG, "serve patched: range=$start-$end/$total partial=$partial")
 
-            val body: InputStream = object : FilterInputStream(
+            // Static container patches first, then in-flight RPU NAL rewriting for MKV.
+            var stream: InputStream =
                 PatchedInputStream(LimitedInputStream(state.source.openAt(start), count), start, state.patches)
-            ) {
+            state.mkvMeta?.let { stream = MkvRpuTransformer(stream, start, it) }
+            val body: InputStream = object : FilterInputStream(stream) {
                 init { activeStreams.incrementAndGet() }
                 override fun close() {
                     super.close()

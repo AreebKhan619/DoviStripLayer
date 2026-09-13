@@ -87,6 +87,50 @@ class DvPatcherTest {
         assertEquals(0, MkvDvPatcher.findPatches(ByteSource(cleaned)).size)
     }
 
+    // --- MKV analyze + RPU transformer ---
+
+    @Test
+    fun `analyze finds video track, nal length and first cluster`() {
+        val data = fixtureBytes("p81_dv.mkv")
+        val meta = MkvDvPatcher.analyze(ByteSource(data))!!
+        assertTrue(meta.videoTrackNumber > 0)
+        assertEquals(4, meta.nalLengthSize)
+        assertTrue(meta.firstClusterOffset > 0)
+        // First-cluster offset must point exactly at a Cluster element ID.
+        assertEquals(0x1F, data[meta.firstClusterOffset.toInt()].toInt() and 0xFF)
+        assertEquals(0x43, data[meta.firstClusterOffset.toInt() + 1].toInt() and 0xFF)
+        assertTrue(meta.patches.isNotEmpty())
+    }
+
+    @Test
+    fun `transformer rewrites rpu nals without changing length`() {
+        val data = fixtureBytes("p81_dv.mkv")
+        val meta = MkvDvPatcher.analyze(ByteSource(data))!!
+        val patched = applyPatches(data, meta.patches)
+
+        val out = MkvRpuTransformer(ByteArrayInputStream(patched), 0, meta).readBytes()
+        assertEquals(patched.size, out.size)
+        assertTrue(!out.contentEquals(patched)) // RPUs were rewritten
+
+        // Idempotent: no RPUs left to rewrite on a second pass.
+        val again = MkvRpuTransformer(ByteArrayInputStream(out), 0, meta).readBytes()
+        assertTrue(again.contentEquals(out))
+
+        File("build/patched").mkdirs()
+        File("build/patched/p81_transformed.mkv").writeBytes(out)
+    }
+
+    @Test
+    fun `transformer handles mid-file range starting at cluster boundary`() {
+        val data = fixtureBytes("p81_dv.mkv")
+        val meta = MkvDvPatcher.analyze(ByteSource(data))!!
+        val start = meta.firstClusterOffset.toInt()
+        val tail = data.copyOfRange(start, data.size)
+        val out = MkvRpuTransformer(ByteArrayInputStream(tail), start.toLong(), meta).readBytes()
+        assertEquals(tail.size, out.size)
+        assertTrue(!out.contentEquals(tail)) // this file's RPUs live in the clusters
+    }
+
     // --- PatchedInputStream ---
 
     @Test
