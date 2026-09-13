@@ -26,11 +26,16 @@ Sources supported: local files (`file://`, `content://`), direct HTTP(S) file UR
    - *Local file with enough free space* → lossless remux into the app cache with a progress
      bar (`ffmpeg -c copy -bsf:v dovi_rpu=strip=1`), then the clean file is handed to your
      player. Perfect seeking. Repeated plays of the same file reuse the cached result.
-   - *URLs / streams / low storage* → a localhost proxy (`127.0.0.1:46836`): one continuous
-     FFmpeg session strips DV on the fly into a rolling local HLS window (~90 s of segments)
-     that your player streams. Playback starts once the first segments are ready (10–30 s for
-     slow remote sources). **Proxy mode limitations:** seeking is restricted to the rolling
-     window, and subtitle tracks are dropped (MPEG-TS segments can't carry PGS/SRT).
+   - *Direct MP4/MKV URLs (and local files without spare storage)* → **pass-through patch
+     proxy** (`127.0.0.1:46836`): the file is served byte-identical with full HTTP Range
+     support — native seeking, real duration, instant start, all tracks kept — while a
+     handful of same-size byte patches neutralize the container's Dolby Vision signaling
+     (`dvvC`/`dvh1` in MP4, BlockAdditionMapping in MKV) in flight. With the container no
+     longer declaring DV, players and TV pipelines treat the video as plain HEVC/HDR10 and
+     ignore the in-band RPU data.
+   - *Adaptive inputs (m3u8/DASH) and odd containers* → fallback: one continuous FFmpeg
+     session strips DV into a rolling local HLS window. Live-window semantics: limited
+     seeking, subtitles dropped.
 4. Engine: FFmpeg 8 (`ffmpeg-kit` fork `com.antonkarpenko:ffmpeg-kit-https`). The strip
    command was validated against official Dolby *Sol Levante* P5/P8.1 samples: output carries
    zero DV markers and an intact HDR10 base (bt2020nc / SMPTE 2084).
