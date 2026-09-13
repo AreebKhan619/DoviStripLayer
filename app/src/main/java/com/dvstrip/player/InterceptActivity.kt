@@ -13,8 +13,10 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
@@ -91,25 +93,39 @@ class InterceptActivity : AppCompatActivity() {
         when (Decision.stripMode(isLocal, size, free, prefs.alwaysProxy)) {
             StripMode.PROXY -> {
                 status.text = getString(R.string.starting_proxy)
-                val sessionId = "s" + System.currentTimeMillis()
-                ProxyService.start(this, uri, sessionId)
                 lifecycleScope.launch {
-                    // Launch the player only once the first HLS segments exist — a remote
-                    // source can take 10–30s to open before FFmpeg emits anything.
-                    val playlist = ProxyService.playlistFile(this@InterceptActivity, sessionId)
-                    val ready = withTimeoutOrNull(120_000) {
-                        while (!(playlist.exists() && playlist.length() > 0)) delay(500)
-                        true
+                    val container = info.container ?: ""
+                    val isMp4 = container.contains("mp4") || container.contains("mov")
+                    val isMkv = container.contains("matroska")
+                    if (isMp4 || isMkv) {
+                        // Pass-through mode: compute same-size byte patches that neutralize
+                        // the container's DV signaling, then serve the file byte-identical
+                        // with full Range support — native seeking and real duration.
+                        val prepared = withContext(Dispatchers.IO) {
+                            runCatching {
+                                val src = Sources.forUri(this@InterceptActivity, uri)
+                                val patches = if (isMp4) Mp4DvPatcher.findPatches(src)
+                                else MkvDvPatcher.findPatches(src)
+                                Pair(patches, src.length)
+                            }.onFailure { Log.e("DVStrip", "patch analysis failed", it) }.getOrNull()
+                        }
+                        if (isFinishing) return@launch
+                        if (prepared != null && prepared.second > 0) {
+                            val ext = if (isMp4) "mp4" else "mkv"
+                            Log.i("DVStrip", "patch mode: ${prepared.first.size} patches, len=${prepared.second}")
+                            ProxyService.startPatch(this@InterceptActivity, uri, prepared.first, prepared.second, ext)
+                            if (waitForProxyPort()) {
+                                forward(
+                                    Uri.parse(ProxyService.mediaUrl(ext)),
+                                    if (isMp4) "video/mp4" else "video/x-matroska"
+                                )
+                            } else {
+                                offerPassThrough(uri, getString(R.string.error_title))
+                            }
+                            return@launch
+                        }
                     }
-                    if (isFinishing) return@launch
-                    if (ready == true) {
-                        Log.i("DVStrip", "playlist ready, launching player")
-                        forward(Uri.parse(ProxyService.playlistUrl(sessionId)), "application/vnd.apple.mpegurl")
-                    } else {
-                        Log.w("DVStrip", "playlist never appeared")
-                        stopService(Intent(this@InterceptActivity, ProxyService::class.java))
-                        offerPassThrough(uri, getString(R.string.error_title))
-                    }
+                    startHlsProxy(uri)
                 }
             }
             StripMode.TEMP_FILE -> {
@@ -140,6 +156,41 @@ class InterceptActivity : AppCompatActivity() {
                 })
             }
         }
+    }
+
+    /** HLS re-wrap fallback for sources that can't be byte-served (m3u8/DASH, odd containers). */
+    private fun startHlsProxy(uri: Uri) {
+        val sessionId = "s" + System.currentTimeMillis()
+        ProxyService.startHls(this, uri, sessionId)
+        lifecycleScope.launch {
+            // Launch the player only once the first HLS segments exist — a remote
+            // source can take 10–30s to open before FFmpeg emits anything.
+            val playlist = ProxyService.playlistFile(this@InterceptActivity, sessionId)
+            val ready = withTimeoutOrNull(120_000) {
+                while (!(playlist.exists() && playlist.length() > 0)) delay(500)
+                true
+            }
+            if (isFinishing) return@launch
+            if (ready == true) {
+                Log.i("DVStrip", "playlist ready, launching player")
+                forward(Uri.parse(ProxyService.playlistUrl(sessionId)), "application/vnd.apple.mpegurl")
+            } else {
+                Log.w("DVStrip", "playlist never appeared")
+                stopService(Intent(this@InterceptActivity, ProxyService::class.java))
+                offerPassThrough(uri, getString(R.string.error_title))
+            }
+        }
+    }
+
+    private suspend fun waitForProxyPort(): Boolean = withContext(Dispatchers.IO) {
+        repeat(50) {
+            try {
+                java.net.Socket("127.0.0.1", ProxyService.PORT).use { return@withContext true }
+            } catch (e: Exception) {
+                delay(100)
+            }
+        }
+        false
     }
 
     private fun localFileSize(uri: Uri): Long? = when (uri.scheme) {

@@ -18,21 +18,39 @@ import androidx.core.app.NotificationCompat
 import com.antonkarpenko.ffmpegkit.FFmpegKit
 import com.antonkarpenko.ffmpegkit.FFmpegSession
 import fi.iki.elonen.NanoHTTPD
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
 import java.io.FileInputStream
+import java.io.FilterInputStream
+import java.io.InputStream
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Foreground service that strips Dolby Vision from a source in realtime into a rolling local
- * HLS window (one continuous FFmpeg session), served by a stateless localhost file server.
- * Serving plain files makes player connection habits (probe + reopen + parallel requests)
- * harmless — unlike a pipe, nothing restarts when a connection closes.
+ * Localhost media proxy with two modes:
+ *
+ * PATCH (default for direct MP4/MKV sources): serves the source byte-identical with full
+ * HTTP Range support — the player seeks natively and sees the real duration — while a small
+ * set of same-size byte patches (computed up front by [Mp4DvPatcher]/[MkvDvPatcher])
+ * neutralizes the container's Dolby Vision signaling in flight. Lossless, zero CPU.
+ *
+ * HLS (fallback for adaptive inputs like m3u8/DASH): one continuous FFmpeg copy-remux
+ * strips DV into a rolling local HLS window. Live-window semantics, limited seeking.
  */
 class ProxyService : Service() {
 
     companion object {
         const val PORT = 46836
         const val EXTRA_SOURCE = "source"
+        const val EXTRA_MODE = "mode"
         const val EXTRA_SESSION_ID = "sessionId"
+        const val EXTRA_PATCHES = "patches"
+        const val EXTRA_LENGTH = "length"
+        const val EXTRA_EXT = "ext"
+        const val MODE_PATCH = "patch"
+        const val MODE_HLS = "hls"
         const val ACTION_STOP = "com.dvstrip.player.STOP_PROXY"
         private const val CHANNEL_ID = "dvstrip_proxy"
         private const val IDLE_TIMEOUT_MS = 10L * 60 * 1000
@@ -45,21 +63,71 @@ class ProxyService : Service() {
 
         fun playlistUrl(sessionId: String): String = "http://127.0.0.1:$PORT/$sessionId/index.m3u8"
 
-        fun start(context: Context, sourceUri: Uri, sessionId: String) {
+        fun mediaUrl(ext: String): String = "http://127.0.0.1:$PORT/media.$ext"
+
+        fun startHls(context: Context, sourceUri: Uri, sessionId: String) {
             val i = Intent(context, ProxyService::class.java)
+                .putExtra(EXTRA_MODE, MODE_HLS)
                 .putExtra(EXTRA_SOURCE, sourceUri.toString())
                 .putExtra(EXTRA_SESSION_ID, sessionId)
+            startFg(context, i)
+        }
+
+        fun startPatch(context: Context, sourceUri: Uri, patches: List<Patch>, length: Long, ext: String) {
+            val i = Intent(context, ProxyService::class.java)
+                .putExtra(EXTRA_MODE, MODE_PATCH)
+                .putExtra(EXTRA_SOURCE, sourceUri.toString())
+                .putExtra(EXTRA_PATCHES, encodePatches(patches))
+                .putExtra(EXTRA_LENGTH, length)
+                .putExtra(EXTRA_EXT, ext)
+            startFg(context, i)
+        }
+
+        private fun startFg(context: Context, i: Intent) {
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
         }
+
+        fun encodePatches(patches: List<Patch>): ByteArray {
+            val bos = ByteArrayOutputStream()
+            DataOutputStream(bos).use { out ->
+                out.writeInt(patches.size)
+                for (p in patches) {
+                    out.writeLong(p.offset)
+                    out.writeInt(p.bytes.size)
+                    out.write(p.bytes)
+                }
+            }
+            return bos.toByteArray()
+        }
+
+        fun decodePatches(blob: ByteArray): List<Patch> =
+            DataInputStream(ByteArrayInputStream(blob)).use { ins ->
+                List(ins.readInt()) {
+                    val offset = ins.readLong()
+                    val bytes = ByteArray(ins.readInt())
+                    ins.readFully(bytes)
+                    Patch(offset, bytes)
+                }
+            }
     }
 
-    private var server: HlsServer? = null
+    private class PatchState(
+        val source: StreamableSource,
+        val patches: List<Patch>,
+        val length: Long,
+        val ext: String
+    )
+
+    private var server: ProxyServer? = null
+    @Volatile private var patchState: PatchState? = null
     private var ffmpegSession: FFmpegSession? = null
     private val idleHandler = Handler(Looper.getMainLooper())
     private val idleCheck = object : Runnable {
         override fun run() {
             val s = server
-            if (s == null || System.currentTimeMillis() - s.lastRequest > IDLE_TIMEOUT_MS) {
+            val idle = s == null ||
+                (s.activeStreams.get() == 0 && System.currentTimeMillis() - s.lastRequest > IDLE_TIMEOUT_MS)
+            if (idle) {
                 Log.i(TAG, "proxy idle, stopping")
                 stopSelf()
             } else {
@@ -76,28 +144,44 @@ class ProxyService : Service() {
             return START_NOT_STICKY
         }
         val source = intent?.getStringExtra(EXTRA_SOURCE) ?: return START_NOT_STICKY
-        val sessionId = intent.getStringExtra(EXTRA_SESSION_ID) ?: return START_NOT_STICKY
-
         startInForeground()
 
-        // Fresh state: previous ffmpeg + all old session dirs go away.
+        // Reset whatever the previous playback session was doing.
         ffmpegSession?.cancel()
+        ffmpegSession = null
+        patchState = null
         hlsRoot(this).deleteRecursively()
-        val sessionDir = File(hlsRoot(this), sessionId).apply { mkdirs() }
 
-        val input = MediaProbe.ffmpegInput(this, Uri.parse(source))
-        val args = FfCommands.stripToHls(
-            input,
-            File(sessionDir, "seg%05d.ts").absolutePath,
-            File(sessionDir, "index.m3u8").absolutePath
-        )
-        Log.i(TAG, "proxy ffmpeg start: session=$sessionId")
-        ffmpegSession = FFmpegKit.executeWithArgumentsAsync(args.toTypedArray()) { s ->
-            Log.i(TAG, "proxy ffmpeg finished: rc=${s.returnCode}")
+        when (intent.getStringExtra(EXTRA_MODE)) {
+            MODE_PATCH -> {
+                val patches = decodePatches(intent.getByteArrayExtra(EXTRA_PATCHES) ?: ByteArray(4))
+                patchState = PatchState(
+                    Sources.forUri(this, Uri.parse(source)),
+                    patches,
+                    intent.getLongExtra(EXTRA_LENGTH, -1),
+                    intent.getStringExtra(EXTRA_EXT) ?: "mkv"
+                )
+                Log.i(TAG, "patch proxy: ${patches.size} patches, length=${patchState!!.length}")
+            }
+            MODE_HLS -> {
+                val sessionId = intent.getStringExtra(EXTRA_SESSION_ID) ?: return START_NOT_STICKY
+                val sessionDir = File(hlsRoot(this), sessionId).apply { mkdirs() }
+                val input = MediaProbe.ffmpegInput(this, Uri.parse(source))
+                val args = FfCommands.stripToHls(
+                    input,
+                    File(sessionDir, "seg%05d.ts").absolutePath,
+                    File(sessionDir, "index.m3u8").absolutePath
+                )
+                Log.i(TAG, "hls proxy ffmpeg start: session=$sessionId")
+                ffmpegSession = FFmpegKit.executeWithArgumentsAsync(args.toTypedArray()) { s ->
+                    Log.i(TAG, "hls proxy ffmpeg finished: rc=${s.returnCode}")
+                }
+            }
+            else -> return START_NOT_STICKY
         }
 
         if (server == null) {
-            server = HlsServer().also {
+            server = ProxyServer().also {
                 it.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
                 Log.i(TAG, "proxy server listening on $PORT")
             }
@@ -142,28 +226,95 @@ class ProxyService : Service() {
         }
     }
 
-    private inner class HlsServer : NanoHTTPD("127.0.0.1", PORT) {
+    private inner class ProxyServer : NanoHTTPD("127.0.0.1", PORT) {
 
         @Volatile var lastRequest: Long = System.currentTimeMillis()
+        val activeStreams = AtomicInteger(0)
 
         override fun serve(session: IHTTPSession): Response {
             lastRequest = System.currentTimeMillis()
             val path = session.uri.trimStart('/')
-            if (path.contains("..") || !path.matches(Regex("[A-Za-z0-9_\\-]+/[A-Za-z0-9_\\-]+\\.(m3u8|ts)"))) {
-                return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "not found")
+            return when {
+                path.startsWith("media.") -> servePatched(session)
+                path.matches(Regex("[A-Za-z0-9_\\-]+/[A-Za-z0-9_\\-]+\\.(m3u8|ts)")) && !path.contains("..") ->
+                    serveHlsFile(path)
+                else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "not found")
             }
+        }
+
+        private fun servePatched(session: IHTTPSession): Response {
+            val state = patchState
+                ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "no session")
+            val total = state.length
+            val mime = if (state.ext == "mp4") "video/mp4" else "video/x-matroska"
+
+            var start = 0L
+            var end = total - 1
+            var partial = false
+            val range = session.headers["range"]
+            if (range != null && range.startsWith("bytes=") && total > 0) {
+                val spec = range.removePrefix("bytes=").substringBefore(',').trim()
+                val dash = spec.indexOf('-')
+                if (dash > 0) {
+                    start = spec.substring(0, dash).toLongOrNull() ?: 0
+                    spec.substring(dash + 1).toLongOrNull()?.let { end = it }
+                } else if (dash == 0) {
+                    val suffix = spec.substring(1).toLongOrNull() ?: 0
+                    start = (total - suffix).coerceAtLeast(0)
+                }
+                end = end.coerceAtMost(total - 1)
+                if (start > end) {
+                    return newFixedLengthResponse(
+                        Response.Status.RANGE_NOT_SATISFIABLE, "text/plain", "bad range"
+                    ).apply { addHeader("Content-Range", "bytes */$total") }
+                }
+                partial = true
+            }
+            val count = end - start + 1
+            Log.i(TAG, "serve patched: range=$start-$end/$total partial=$partial")
+
+            val body: InputStream = object : FilterInputStream(
+                PatchedInputStream(LimitedInputStream(state.source.openAt(start), count), start, state.patches)
+            ) {
+                init { activeStreams.incrementAndGet() }
+                override fun close() {
+                    super.close()
+                    activeStreams.decrementAndGet()
+                    lastRequest = System.currentTimeMillis()
+                }
+            }
+            val status = if (partial) Response.Status.PARTIAL_CONTENT else Response.Status.OK
+            return newFixedLengthResponse(status, mime, body, count).apply {
+                if (state.source.supportsRanges) addHeader("Accept-Ranges", "bytes")
+                if (partial) addHeader("Content-Range", "bytes $start-$end/$total")
+            }
+        }
+
+        private fun serveHlsFile(path: String): Response {
             val file = File(hlsRoot(this@ProxyService), path)
             if (!file.exists()) {
-                Log.w(TAG, "proxy 404: $path")
                 return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "not found")
             }
             val mime = if (path.endsWith(".m3u8")) "application/vnd.apple.mpegurl" else "video/mp2t"
-            val resp = newFixedLengthResponse(
-                Response.Status.OK, mime, FileInputStream(file), file.length()
-            )
-            // The playlist mutates as the window rolls — never let the player cache it.
-            if (path.endsWith(".m3u8")) resp.addHeader("Cache-Control", "no-cache, no-store")
-            return resp
+            return newFixedLengthResponse(Response.Status.OK, mime, FileInputStream(file), file.length())
+                .apply { if (path.endsWith(".m3u8")) addHeader("Cache-Control", "no-cache, no-store") }
         }
+    }
+}
+
+/** Caps a stream at [limit] bytes — a range response must not run past its declared end. */
+class LimitedInputStream(base: InputStream, private var limit: Long) : FilterInputStream(base) {
+    override fun read(): Int {
+        if (limit <= 0) return -1
+        val b = super.read()
+        if (b >= 0) limit--
+        return b
+    }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+        if (limit <= 0) return -1
+        val n = super.read(b, off, minOf(len.toLong(), limit).toInt())
+        if (n > 0) limit -= n
+        return n
     }
 }
