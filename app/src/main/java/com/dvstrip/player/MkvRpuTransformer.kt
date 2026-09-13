@@ -18,7 +18,9 @@ import java.io.InputStream
 class MkvRpuTransformer(
     private val base: InputStream,
     private var absPos: Long,
-    private val meta: MkvMeta
+    private val meta: MkvMeta,
+    /** Diagnostics sink — Android Log in production, no-op in JVM tests. */
+    private val log: (String) -> Unit = {}
 ) : InputStream() {
 
     companion object {
@@ -31,6 +33,11 @@ class MkvRpuTransformer(
     private var eof = false
     /** True once structure tracking is lost — remaining bytes pass through untouched. */
     private var passThrough = false
+
+    var clustersParsed = 0
+        private set
+    var rpusRewritten = 0
+        private set
 
     override fun read(): Int {
         val one = ByteArray(1)
@@ -49,7 +56,10 @@ class MkvRpuTransformer(
         return n
     }
 
-    override fun close() = base.close()
+    override fun close() {
+        log("transformer closed: clusters=$clustersParsed rpusRewritten=$rpusRewritten passThrough=$passThrough")
+        base.close()
+    }
 
     private fun emit(bytes: ByteArray) {
         out = bytes
@@ -123,6 +133,7 @@ class MkvRpuTransformer(
         val headerBytes = header.copyOf(idLen + sizeLen)
         if (unknownSize || size > MAX_CLUSTER_BUFFER) {
             // Can't safely frame this element — emit what we have and stop transforming.
+            log("transformer -> passThrough at $absPos: id=0x${id.toString(16)} unknownSize=$unknownSize size=$size")
             passThrough = true
             absPos += headerBytes.size
             emit(headerBytes)
@@ -144,12 +155,19 @@ class MkvRpuTransformer(
             return
         }
 
-        if (id == MkvDvPatcher.ID_CLUSTER) patchCluster(content)
+        if (id == MkvDvPatcher.ID_CLUSTER) {
+            patchCluster(content)
+            clustersParsed++
+            if (clustersParsed == 1 || clustersParsed % 100 == 0) {
+                log("transformer: clusters=$clustersParsed rpusRewritten=$rpusRewritten")
+            }
+        }
         absPos += headerBytes.size + content.size
         emit(headerBytes + content)
     }
 
     private fun giveUp(pending: ByteArray, have: Int) {
+        log("transformer -> passThrough (unparseable element header) at $absPos")
         passThrough = true
         if (have > 0) {
             absPos += have
@@ -237,6 +255,7 @@ class MkvRpuTransformer(
                 buf[nalStart + 1] = 0x01
                 for (i in nalStart + 2 until nalEnd - 1) buf[i] = 0xFF.toByte()
                 buf[nalEnd - 1] = 0x80.toByte()
+                rpusRewritten++
             }
             pos = nalEnd
         }

@@ -186,6 +186,7 @@ class ProxyService : Service() {
                     mkvMeta
                 )
                 Log.i(TAG, "patch proxy: ${patches.size} patches, length=${patchState!!.length}, rpuRewrite=${mkvMeta != null}")
+                selfCheck(patchState!!.ext)
             }
             MODE_HLS -> {
                 val sessionId = intent.getStringExtra(EXTRA_SESSION_ID) ?: return START_NOT_STICKY
@@ -213,6 +214,31 @@ class ProxyService : Service() {
         idleHandler.removeCallbacks(idleCheck)
         idleHandler.postDelayed(idleCheck, 60_000)
         return START_STICKY
+    }
+
+    /**
+     * End-to-end verification: probe the proxy's OWN output with the bundled ffprobe and log
+     * whether any Dolby Vision data survives in the exact bytes the player receives.
+     */
+    private fun selfCheck(ext: String) {
+        Thread {
+            try {
+                Thread.sleep(3_000) // let the player's own connections settle first
+                val url = mediaUrl(ext)
+                val framesJson = com.antonkarpenko.ffmpegkit.FFprobeKit.executeWithArguments(
+                    FfCommands.probeFrames(url, network = true).toTypedArray()
+                ).output ?: ""
+                val dvLeft = ProbeParser.framesHaveDovi(framesJson)
+                val streamsJson = com.antonkarpenko.ffmpegkit.FFprobeKit.executeWithArguments(
+                    FfCommands.probeStreams(url, network = true).toTypedArray()
+                ).output ?: ""
+                val configLeft = ProbeParser.parseStreams(streamsJson).hasDolbyVision
+                Log.i(TAG, "SELF-CHECK proxy output: frameRPUs=${if (dvLeft) "STILL PRESENT" else "none"} " +
+                    "dvConfig=${if (configLeft) "STILL PRESENT" else "none"}")
+            } catch (e: Exception) {
+                Log.w(TAG, "self-check failed", e)
+            }
+        }.start()
     }
 
     override fun onDestroy() {
@@ -300,7 +326,7 @@ class ProxyService : Service() {
             // Static container patches first, then in-flight RPU NAL rewriting for MKV.
             var stream: InputStream =
                 PatchedInputStream(LimitedInputStream(state.source.openAt(start), count), start, state.patches)
-            state.mkvMeta?.let { stream = MkvRpuTransformer(stream, start, it) }
+            state.mkvMeta?.let { stream = MkvRpuTransformer(stream, start, it) { msg -> Log.i(TAG, msg) } }
             val body: InputStream = object : FilterInputStream(stream) {
                 init { activeStreams.incrementAndGet() }
                 override fun close() {
