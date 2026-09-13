@@ -11,6 +11,7 @@
     <string name="p5_warning_title">Dolby Vision Profile 5</string>
     <string name="p5_warning_message">This video is DV-only (Profile 5) — it has no compatible HDR/SDR base layer. Removing the Dolby Vision layer is not possible without a very slow full conversion, so colors will look wrong (purple/green tint) on this TV if played as-is.</string>
     <string name="error_title">Cannot process video</string>
+    <string name="error_probe_message">The video could not be analyzed (source unreadable, or it stalled for 45 seconds). You can still forward it to the player unprocessed.</string>
     <string name="no_player_title">No target player selected</string>
     <string name="no_player_message">Choose the real video player that DV Strip Player should forward media to.</string>
     <string name="open_settings">Open settings</string>

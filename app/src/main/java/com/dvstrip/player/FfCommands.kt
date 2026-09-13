@@ -8,17 +8,27 @@ package com.dvstrip.player
  */
 object FfCommands {
 
-    fun probeStreams(input: String): List<String> = listOf(
-        "-v", "quiet", "-print_format", "json",
-        "-show_format", "-show_streams", input
-    )
+    /** 20s of socket silence aborts a network probe instead of hanging forever (microseconds). */
+    private const val NETWORK_RW_TIMEOUT_US = "20000000"
+
+    fun probeStreams(input: String, network: Boolean = false): List<String> = buildList {
+        add("-v"); add("quiet")
+        if (network) { add("-rw_timeout"); add(NETWORK_RW_TIMEOUT_US) }
+        add("-print_format"); add("json")
+        add("-show_format"); add("-show_streams")
+        add(input)
+    }
 
     /** Decodes only the first 8 frames — container-independent RPU detection. */
-    fun probeFrames(input: String): List<String> = listOf(
-        "-v", "quiet", "-print_format", "json",
-        "-select_streams", "v:0", "-read_intervals", "%+#8",
-        "-show_entries", "frame_side_data=side_data_type", input
-    )
+    fun probeFrames(input: String, network: Boolean = false): List<String> = buildList {
+        add("-v"); add("quiet")
+        if (network) { add("-rw_timeout"); add(NETWORK_RW_TIMEOUT_US) }
+        add("-print_format"); add("json")
+        add("-select_streams"); add("v:0")
+        add("-read_intervals"); add("%+#8")
+        add("-show_entries"); add("frame_side_data=side_data_type")
+        add(input)
+    }
 
     fun strip(input: String, output: String, dropSubs: Boolean): List<String> = buildList {
         add("-y"); add("-hide_banner")

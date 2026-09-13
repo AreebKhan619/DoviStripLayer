@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.StatFs
+import android.util.Log
 import android.widget.Button
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -13,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 class InterceptActivity : AppCompatActivity() {
@@ -58,13 +60,22 @@ class InterceptActivity : AppCompatActivity() {
     private fun analyze(uri: Uri) {
         status.text = getString(R.string.analyzing)
         lifecycleScope.launch {
-            val info = runCatching { MediaProbe.probe(this@InterceptActivity, uri) }.getOrNull()
+            // Watchdog: a stalling source (torrent server with no data yet, slow cloud
+            // provider) can block ffprobe indefinitely — never leave the user hanging.
+            val info = withTimeoutOrNull(45_000) {
+                runCatching { MediaProbe.probe(this@InterceptActivity, uri) }
+                    .onFailure { Log.e("DVStrip", "probe failed", it) }
+                    .getOrNull()
+            }
             if (isFinishing) return@launch
             if (info == null) {
+                Log.w("DVStrip", "probe null/timeout for $uri")
                 offerPassThrough(uri, getString(R.string.error_title))
                 return@launch
             }
-            when (Decision.actionFor(info)) {
+            val action = Decision.actionFor(info)
+            Log.i("DVStrip", "action=$action for $uri")
+            when (action) {
                 DvAction.FORWARD -> forward(uri, intent.type)
                 DvAction.WARN_P5 -> warnProfile5(uri)
                 DvAction.STRIP -> strip(uri, info)
@@ -133,6 +144,7 @@ class InterceptActivity : AppCompatActivity() {
     private fun offerPassThrough(uri: Uri, title: String) {
         AlertDialog.Builder(this)
             .setTitle(title)
+            .setMessage(R.string.error_probe_message)
             .setPositiveButton(R.string.pass_through) { _, _ -> forward(uri, intent.type) }
             .setNegativeButton(R.string.cancel) { _, _ -> finish() }
             .setOnCancelListener { finish() }

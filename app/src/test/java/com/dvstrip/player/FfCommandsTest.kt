@@ -31,6 +31,21 @@ class FfCommandsTest {
     }
 
     @Test
+    fun `network probe includes rw_timeout before input`() {
+        val cmd = FfCommands.probeStreams("http://x/a.mkv", network = true)
+        val i = cmd.indexOf("-rw_timeout")
+        assertTrue(i in 0 until cmd.lastIndex)
+        assertEquals("20000000", cmd[i + 1])
+        assertEquals("http://x/a.mkv", cmd.last())
+        assertTrue(FfCommands.probeFrames("http://x/a.mkv", network = true).contains("-rw_timeout"))
+    }
+
+    @Test
+    fun `local probe has no rw_timeout`() {
+        assertFalse(FfCommands.probeStreams("/sdcard/a.mkv").contains("-rw_timeout"))
+    }
+
+    @Test
     fun `strip command uses dovi_rpu bsf with map 0 copy`() {
         val cmd = FfCommands.strip("in.mkv", "out.mkv", dropSubs = false)
         assertEquals(
