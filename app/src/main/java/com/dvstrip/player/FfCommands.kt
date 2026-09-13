@@ -46,16 +46,24 @@ object FfCommands {
         "-c", "copy", "-bsf:v", "filter_units=remove_types=62", output
     )
 
-    fun stripToPipe(input: String, pipe: String, dropSubs: Boolean): List<String> = buildList {
-        add("-hide_banner")
-        add("-i"); add(input)
-        add("-map"); add("0")
-        if (dropSubs) { add("-sn"); add("-dn") }
-        add("-c"); add("copy")
-        add("-bsf:v"); add("dovi_rpu=strip=1")
-        add("-f"); add("matroska")
-        add(pipe)
-    }
+    /**
+     * Continuous strip-remux into a rolling local HLS window. `-re` throttles reading to
+     * realtime so the delete_segments window tracks playback position instead of racing
+     * ahead at download speed (which would delete segments the player still needs).
+     * Subtitles are dropped: MPEG-TS segments cannot carry PGS/SRT tracks.
+     */
+    fun stripToHls(input: String, segmentPattern: String, playlist: String): List<String> = listOf(
+        "-hide_banner", "-re", "-i", input,
+        "-map", "0:v:0", "-map", "0:a?",
+        "-c", "copy", "-sn", "-dn",
+        "-bsf:v", "dovi_rpu=strip=1",
+        "-f", "hls",
+        "-hls_time", "6",
+        "-hls_list_size", "15",
+        "-hls_flags", "delete_segments",
+        "-hls_segment_filename", segmentPattern,
+        playlist
+    )
 
     /** Keep MP4 in MP4 (mov_text subs can't be copied into MKV); everything else goes to MKV. */
     fun outputExtension(containerName: String?): String =

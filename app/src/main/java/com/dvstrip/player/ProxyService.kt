@@ -13,41 +13,54 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.antonkarpenko.ffmpegkit.FFmpegKit
-import com.antonkarpenko.ffmpegkit.FFmpegKitConfig
 import com.antonkarpenko.ffmpegkit.FFmpegSession
 import fi.iki.elonen.NanoHTTPD
+import java.io.File
 import java.io.FileInputStream
 
 /**
- * Foreground service hosting a localhost HTTP server. Each incoming request spawns a fresh
- * FFmpeg copy-remux session that strips Dolby Vision and writes streamable Matroska into a
- * named pipe, which is piped straight out as the HTTP response body. Non-seekable by design.
+ * Foreground service that strips Dolby Vision from a source in realtime into a rolling local
+ * HLS window (one continuous FFmpeg session), served by a stateless localhost file server.
+ * Serving plain files makes player connection habits (probe + reopen + parallel requests)
+ * harmless — unlike a pipe, nothing restarts when a connection closes.
  */
 class ProxyService : Service() {
 
     companion object {
         const val PORT = 46836
         const val EXTRA_SOURCE = "source"
+        const val EXTRA_SESSION_ID = "sessionId"
         const val ACTION_STOP = "com.dvstrip.player.STOP_PROXY"
         private const val CHANNEL_ID = "dvstrip_proxy"
         private const val IDLE_TIMEOUT_MS = 10L * 60 * 1000
+        private const val TAG = "DVStrip"
 
-        fun streamUrl(): String = "http://127.0.0.1:$PORT/stream.mkv"
+        fun hlsRoot(context: Context): File = File(context.cacheDir, "hls")
 
-        fun start(context: Context, sourceUri: Uri) {
-            val i = Intent(context, ProxyService::class.java).putExtra(EXTRA_SOURCE, sourceUri.toString())
+        fun playlistFile(context: Context, sessionId: String): File =
+            File(File(hlsRoot(context), sessionId), "index.m3u8")
+
+        fun playlistUrl(sessionId: String): String = "http://127.0.0.1:$PORT/$sessionId/index.m3u8"
+
+        fun start(context: Context, sourceUri: Uri, sessionId: String) {
+            val i = Intent(context, ProxyService::class.java)
+                .putExtra(EXTRA_SOURCE, sourceUri.toString())
+                .putExtra(EXTRA_SESSION_ID, sessionId)
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i)
         }
     }
 
-    private var server: StripServer? = null
+    private var server: HlsServer? = null
+    private var ffmpegSession: FFmpegSession? = null
     private val idleHandler = Handler(Looper.getMainLooper())
     private val idleCheck = object : Runnable {
         override fun run() {
             val s = server
-            if (s == null || (!s.hasActiveConnection && System.currentTimeMillis() - s.lastActivity > IDLE_TIMEOUT_MS)) {
+            if (s == null || System.currentTimeMillis() - s.lastRequest > IDLE_TIMEOUT_MS) {
+                Log.i(TAG, "proxy idle, stopping")
                 stopSelf()
             } else {
                 idleHandler.postDelayed(this, 60_000)
@@ -63,12 +76,31 @@ class ProxyService : Service() {
             return START_NOT_STICKY
         }
         val source = intent?.getStringExtra(EXTRA_SOURCE) ?: return START_NOT_STICKY
+        val sessionId = intent.getStringExtra(EXTRA_SESSION_ID) ?: return START_NOT_STICKY
 
         startInForeground()
 
-        server?.stop()
-        server = StripServer(this, Uri.parse(source)).also {
-            it.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
+        // Fresh state: previous ffmpeg + all old session dirs go away.
+        ffmpegSession?.cancel()
+        hlsRoot(this).deleteRecursively()
+        val sessionDir = File(hlsRoot(this), sessionId).apply { mkdirs() }
+
+        val input = MediaProbe.ffmpegInput(this, Uri.parse(source))
+        val args = FfCommands.stripToHls(
+            input,
+            File(sessionDir, "seg%05d.ts").absolutePath,
+            File(sessionDir, "index.m3u8").absolutePath
+        )
+        Log.i(TAG, "proxy ffmpeg start: session=$sessionId")
+        ffmpegSession = FFmpegKit.executeWithArgumentsAsync(args.toTypedArray()) { s ->
+            Log.i(TAG, "proxy ffmpeg finished: rc=${s.returnCode}")
+        }
+
+        if (server == null) {
+            server = HlsServer().also {
+                it.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
+                Log.i(TAG, "proxy server listening on $PORT")
+            }
         }
         idleHandler.removeCallbacks(idleCheck)
         idleHandler.postDelayed(idleCheck, 60_000)
@@ -77,8 +109,10 @@ class ProxyService : Service() {
 
     override fun onDestroy() {
         idleHandler.removeCallbacks(idleCheck)
+        ffmpegSession?.cancel()
         server?.stop()
         server = null
+        hlsRoot(this).deleteRecursively()
         super.onDestroy()
     }
 
@@ -108,40 +142,27 @@ class ProxyService : Service() {
         }
     }
 
-    private inner class StripServer(
-        private val context: Context,
-        private val sourceUri: Uri
-    ) : NanoHTTPD("127.0.0.1", PORT) {
+    private inner class HlsServer : NanoHTTPD("127.0.0.1", PORT) {
 
-        @Volatile var lastActivity: Long = System.currentTimeMillis()
-        @Volatile var hasActiveConnection: Boolean = false
-        @Volatile private var currentSession: FFmpegSession? = null
+        @Volatile var lastRequest: Long = System.currentTimeMillis()
 
         override fun serve(session: IHTTPSession): Response {
-            lastActivity = System.currentTimeMillis()
-
-            // Only one consumer at a time: a new request supersedes the previous session.
-            currentSession?.cancel()
-
-            val input = MediaProbe.ffmpegInput(context, sourceUri)
-            val pipe = FFmpegKitConfig.registerNewFFmpegPipe(context)
-            val args = FfCommands.stripToPipe(input, pipe, dropSubs = false)
-
-            currentSession = FFmpegKit.executeWithArgumentsAsync(args.toTypedArray()) {
-                FFmpegKitConfig.closeFFmpegPipe(pipe)
+            lastRequest = System.currentTimeMillis()
+            val path = session.uri.trimStart('/')
+            if (path.contains("..") || !path.matches(Regex("[A-Za-z0-9_\\-]+/[A-Za-z0-9_\\-]+\\.(m3u8|ts)"))) {
+                return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "not found")
             }
-
-            hasActiveConnection = true
-            val body = object : FileInputStream(pipe) {
-                override fun close() {
-                    super.close()
-                    hasActiveConnection = false
-                    lastActivity = System.currentTimeMillis()
-                    currentSession?.cancel()
-                }
+            val file = File(hlsRoot(this@ProxyService), path)
+            if (!file.exists()) {
+                Log.w(TAG, "proxy 404: $path")
+                return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "not found")
             }
-            val resp = newChunkedResponse(Response.Status.OK, "video/x-matroska", body)
-            resp.addHeader("Accept-Ranges", "none")
+            val mime = if (path.endsWith(".m3u8")) "application/vnd.apple.mpegurl" else "video/mp2t"
+            val resp = newFixedLengthResponse(
+                Response.Status.OK, mime, FileInputStream(file), file.length()
+            )
+            // The playlist mutates as the window rolls — never let the player cache it.
+            if (path.endsWith(".m3u8")) resp.addHeader("Cache-Control", "no-cache, no-store")
             return resp
         }
     }

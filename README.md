@@ -26,9 +26,11 @@ Sources supported: local files (`file://`, `content://`), direct HTTP(S) file UR
    - *Local file with enough free space* → lossless remux into the app cache with a progress
      bar (`ffmpeg -c copy -bsf:v dovi_rpu=strip=1`), then the clean file is handed to your
      player. Perfect seeking. Repeated plays of the same file reuse the cached result.
-   - *URLs / streams / low storage* → a localhost proxy (`127.0.0.1:46836`): FFmpeg pulls the
-     source, strips DV on the fly, and your player streams the cleaned result instantly.
-     **Seeking is limited in proxy mode** (progressive stream).
+   - *URLs / streams / low storage* → a localhost proxy (`127.0.0.1:46836`): one continuous
+     FFmpeg session strips DV on the fly into a rolling local HLS window (~90 s of segments)
+     that your player streams. Playback starts once the first segments are ready (10–30 s for
+     slow remote sources). **Proxy mode limitations:** seeking is restricted to the rolling
+     window, and subtitle tracks are dropped (MPEG-TS segments can't carry PGS/SRT).
 4. Engine: FFmpeg 8 (`ffmpeg-kit` fork `com.antonkarpenko:ffmpeg-kit-https`). The strip
    command was validated against official Dolby *Sol Levante* P5/P8.1 samples: output carries
    zero DV markers and an intact HDR10 base (bt2020nc / SMPTE 2084).

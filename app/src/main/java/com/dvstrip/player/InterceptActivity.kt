@@ -13,6 +13,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -90,8 +91,26 @@ class InterceptActivity : AppCompatActivity() {
         when (Decision.stripMode(isLocal, size, free, prefs.alwaysProxy)) {
             StripMode.PROXY -> {
                 status.text = getString(R.string.starting_proxy)
-                ProxyService.start(this, uri)
-                forward(Uri.parse(ProxyService.streamUrl()), "video/x-matroska")
+                val sessionId = "s" + System.currentTimeMillis()
+                ProxyService.start(this, uri, sessionId)
+                lifecycleScope.launch {
+                    // Launch the player only once the first HLS segments exist — a remote
+                    // source can take 10–30s to open before FFmpeg emits anything.
+                    val playlist = ProxyService.playlistFile(this@InterceptActivity, sessionId)
+                    val ready = withTimeoutOrNull(120_000) {
+                        while (!(playlist.exists() && playlist.length() > 0)) delay(500)
+                        true
+                    }
+                    if (isFinishing) return@launch
+                    if (ready == true) {
+                        Log.i("DVStrip", "playlist ready, launching player")
+                        forward(Uri.parse(ProxyService.playlistUrl(sessionId)), "application/vnd.apple.mpegurl")
+                    } else {
+                        Log.w("DVStrip", "playlist never appeared")
+                        stopService(Intent(this@InterceptActivity, ProxyService::class.java))
+                        offerPassThrough(uri, getString(R.string.error_title))
+                    }
+                }
             }
             StripMode.TEMP_FILE -> {
                 val out = StripEngine.cacheFile(this, uri, size, FfCommands.outputExtension(info.container))

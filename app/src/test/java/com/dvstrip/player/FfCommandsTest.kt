@@ -72,13 +72,15 @@ class FfCommandsTest {
     }
 
     @Test
-    fun `pipe command muxes streamable matroska`() {
-        val cmd = FfCommands.stripToPipe("http://example.com/a.mkv", "/pipe1", dropSubs = false)
-        val i = cmd.indexOf("-f")
-        assertEquals("matroska", cmd[i + 1])
-        assertEquals("/pipe1", cmd.last())
+    fun `hls command strips dv into rolling realtime window`() {
+        val cmd = FfCommands.stripToHls("http://example.com/a.mkv", "/hls/seg%05d.ts", "/hls/index.m3u8")
         assertTrue(cmd.contains("dovi_rpu=strip=1"))
-        assertFalse(cmd.contains("-y"))
+        assertTrue(cmd.indexOf("-re") < cmd.indexOf("-i"))
+        assertTrue(cmd.contains("delete_segments"))
+        assertTrue(cmd.containsAll(listOf("-sn", "-dn")))
+        assertEquals("/hls/index.m3u8", cmd.last())
+        val i = cmd.indexOf("-hls_segment_filename")
+        assertEquals("/hls/seg%05d.ts", cmd[i + 1])
     }
 
     @Test
