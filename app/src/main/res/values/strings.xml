@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DV Strip Player</string>
+    <string name="analyzing">Analyzing video…</string>
+    <string name="stripping">Removing Dolby Vision…</string>
+    <string name="starting_proxy">Starting live DV removal…</string>
+    <string name="forwarding">Opening player…</string>
+    <string name="cancel">Cancel</string>
+    <string name="play_anyway">Play anyway</string>
+    <string name="pass_through">Play original (no processing)</string>
+    <string name="p5_warning_title">Dolby Vision Profile 5</string>
+    <string name="p5_warning_message">This video is DV-only (Profile 5) — it has no compatible HDR/SDR base layer. Removing the Dolby Vision layer is not possible without a very slow full conversion, so colors will look wrong (purple/green tint) on this TV if played as-is.</string>
+    <string name="error_title">Cannot process video</string>
+    <string name="no_player_title">No target player selected</string>
+    <string name="no_player_message">Choose the real video player that DV Strip Player should forward media to.</string>
+    <string name="open_settings">Open settings</string>
+    <string name="settings_target_player">Target player</string>
+    <string name="settings_target_player_none">Not selected — tap to choose</string>
+    <string name="settings_always_proxy">Always use live proxy (never pre-process to a temp file)</string>
+    <string name="settings_clear_cache">Clear cache</string>
+    <string name="settings_cache_size">Cache: %1$s</string>
+    <string name="settings_behavior_summary">How it works:\n• No Dolby Vision → forwarded untouched\n• DV Profile 7/8 (hybrid) → DV removed, clean HDR10 output\n• DV Profile 5 (DV-only) → warning shown (lossless removal impossible)\n\nStreams and large files are cleaned on the fly through a local proxy (seeking may be limited in proxy mode).</string>
+    <string name="proxy_notification_title">DV Strip Player</string>
+    <string name="proxy_notification_text">Removing Dolby Vision from stream…</string>
+    <string name="pick_player_title">Choose target player</string>
+    <string name="no_players_found">No other video players installed</string>
+</resources>

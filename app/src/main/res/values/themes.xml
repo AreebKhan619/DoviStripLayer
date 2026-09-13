@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.DvStrip" parent="Theme.AppCompat.NoActionBar">
+        <item name="colorPrimary">#3D5AFE</item>
+        <item name="colorPrimaryDark">#1A237E</item>
+        <item name="colorAccent">#82B1FF</item>
+        <item name="android:windowBackground">#101318</item>
+    </style>
+
+    <style name="Theme.DvStrip.Intercept">
+        <item name="android:windowBackground">#CC000000</item>
+        <item name="android:windowIsTranslucent">true</item>
+    </style>
+</resources>
