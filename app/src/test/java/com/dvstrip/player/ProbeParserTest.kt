@@ -28,12 +28,17 @@ class ProbeParserTest {
     }
 
     @Test
-    fun `duration and codec are extracted`() {
+    fun `codec and container are extracted`() {
         val info = ProbeParser.parseStreams(fixture("streams_dv_mkv.json"))
         assertEquals("hevc", info.videoCodec)
-        assertNotNull(info.durationSec)
-        assertTrue(info.durationSec!! > 4.0 && info.durationSec!! < 6.0)
         assertTrue(info.container!!.contains("matroska"))
+    }
+
+    @Test
+    fun `duration is extracted from real sample`() {
+        val info = ProbeParser.parseStreams(fixture("streams_real_p81.json"))
+        assertNotNull(info.durationSec)
+        assertTrue(info.durationSec!! > 262.0 && info.durationSec!! < 264.0)
     }
 
     @Test
