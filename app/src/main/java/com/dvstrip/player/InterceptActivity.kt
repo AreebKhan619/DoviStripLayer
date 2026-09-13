@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.StatFs
 import android.util.Log
+import android.view.View
 import android.widget.Button
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -28,6 +29,11 @@ class InterceptActivity : AppCompatActivity() {
     private lateinit var percent: TextView
     private lateinit var cancelButton: Button
     private var stripJob: StripEngine.Job? = null
+    private var startedProxy = false
+
+    companion object {
+        private const val REQ_PLAYER = 1001
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -120,6 +126,7 @@ class InterceptActivity : AppCompatActivity() {
                                 "patch mode: ${prepared.first.size} patches, len=${prepared.second}, " +
                                     "rpuRewrite=${prepared.third != null}"
                             )
+                            startedProxy = true
                             ProxyService.startPatch(
                                 this@InterceptActivity, uri,
                                 prepared.first, prepared.second, ext, prepared.third
@@ -171,6 +178,7 @@ class InterceptActivity : AppCompatActivity() {
     /** HLS re-wrap fallback for sources that can't be byte-served (m3u8/DASH, odd containers). */
     private fun startHlsProxy(uri: Uri) {
         val sessionId = "s" + System.currentTimeMillis()
+        startedProxy = true
         ProxyService.startHls(this, uri, sessionId)
         lifecycleScope.launch {
             // Launch the player only once the first HLS segments exist — a remote
@@ -252,19 +260,37 @@ class InterceptActivity : AppCompatActivity() {
 
     private fun forward(uri: Uri, mime: String?) {
         status.text = getString(R.string.forwarding)
+        progress.visibility = View.GONE
+        percent.visibility = View.GONE
+        cancelButton.visibility = View.GONE
+
         val target = Intent(Intent.ACTION_VIEW)
-            .setDataAndType(uri, mime ?: "video/*")
+        // Relay the caller's extras wholesale: resume position ("position"), title,
+        // subtitles, headers — whatever it would have sent to the player directly.
+        intent.extras?.let { target.putExtras(it) }
+        target.setDataAndType(uri, mime ?: "video/*")
             .setClassName(prefs.playerPackage!!, prefs.playerActivity!!)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        intent.getStringExtra("title")?.let { target.putExtra("title", it) }
         try {
-            startActivity(target)
+            // ForResult keeps us in the chain: the player's exit result (watched position,
+            // duration) is relayed back to the caller in onActivityResult, so apps like
+            // Stremio can save progress exactly as if they had launched the player directly.
+            startActivityForResult(target, REQ_PLAYER)
         } catch (e: ActivityNotFoundException) {
             prefs.playerPackage = null
             prefs.playerActivity = null
             promptNoPlayer()
-            return
         }
-        finish()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQ_PLAYER) {
+            if (data != null) setResult(resultCode, data) else setResult(resultCode)
+            if (startedProxy) stopService(Intent(this, ProxyService::class.java))
+            finish()
+        } else {
+            super.onActivityResult(requestCode, resultCode, data)
+        }
     }
 }
