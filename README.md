@@ -78,5 +78,8 @@ the FFmpeg command builders.
 
 ## Project docs
 
+- **Full project context (read first when returning to this project):** `docs/PROJECT-CONTEXT.md`
+  — the user environment, verified DV facts, the approach history (what failed and why),
+  verification method, and the future-work list.
 - Design spec: `docs/superpowers/specs/2026-09-13-dv-strip-player-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-09-13-dv-strip-player.md`
