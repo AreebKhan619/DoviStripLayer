@@ -120,7 +120,13 @@ class MkvMeta(
     val patches: List<Patch>,
     val firstClusterOffset: Long,
     val videoTrackNumber: Long,
-    val nalLengthSize: Int
+    val nalLengthSize: Int,
+    /**
+     * Whether the video TrackEntry declares a Colour element (0x55B0). Without it, players
+     * only learn the stream is HDR from the bitstream VUI mid-decode, and some pipelines
+     * then don't switch the display to HDR mode until a codec reconfigure (seek/crop).
+     */
+    val hasColourElement: Boolean = false
 )
 
 object MkvDvPatcher {
@@ -133,6 +139,8 @@ object MkvDvPatcher {
     private const val ID_CODEC_ID = 0x86L
     private const val ID_CODEC_PRIVATE = 0x63A2L
     private const val ID_BLOCK_ADDITION_MAPPING = 0x41E4L
+    private const val ID_VIDEO = 0xE0L
+    private const val ID_COLOUR = 0x55B0L
     const val ID_CLUSTER = 0x1F43B675L
     private val DV_FOURCCS = listOf("dvcC", "dvvC", "dvwC")
 
@@ -160,6 +168,7 @@ object MkvDvPatcher {
         var videoTrack = -1L
         var nalLengthSize = 4
         var firstCluster = -1L
+        var hasColour = false
 
         while (r.pos < head.size - 2) {
             val elementStart = r.pos
@@ -177,10 +186,11 @@ object MkvDvPatcher {
                     val teSize = tr.readSize() ?: break
                     val teStart = tr.pos
                     if (teId == ID_TRACK_ENTRY) {
-                        parseTrackEntry(head, teStart, teStart + teSize.toInt(), patches)?.let { (num, lenSize) ->
+                        parseTrackEntry(head, teStart, teStart + teSize.toInt(), patches)?.let { video ->
                             if (videoTrack < 0) {
-                                videoTrack = num
-                                nalLengthSize = lenSize
+                                videoTrack = video.number
+                                nalLengthSize = video.nalLengthSize
+                                hasColour = video.hasColour
                             }
                         }
                     }
@@ -191,21 +201,24 @@ object MkvDvPatcher {
             r.pos += size.toInt()
         }
         if (firstCluster < 0) return null
-        return MkvMeta(patches, firstCluster, videoTrack, nalLengthSize)
+        return MkvMeta(patches, firstCluster, videoTrack, nalLengthSize, hasColour)
     }
 
-    /** Returns (trackNumber, nalLengthSize) when this entry is the HEVC video track. */
+    class VideoTrackInfo(val number: Long, val nalLengthSize: Int, val hasColour: Boolean)
+
+    /** Returns track info when this entry is the HEVC video track. */
     private fun parseTrackEntry(
         buf: ByteArray,
         from: Int,
         to: Int,
         out: MutableList<Patch>
-    ): Pair<Long, Int>? {
+    ): VideoTrackInfo? {
         val r = Reader(buf).apply { pos = from }
         var number = -1L
         var type = -1L
         var codecId = ""
         var nalLengthSize = 4
+        var hasColour = false
         while (r.pos < to - 1) {
             val id = r.readId() ?: break
             val size = r.readSize() ?: break
@@ -219,6 +232,7 @@ object MkvDvPatcher {
                     // hvcC: lengthSizeMinusOne lives in the low 2 bits of byte 21.
                     nalLengthSize = ((buf[contentStart + 21].toInt() and 0x03) + 1)
                 }
+                ID_VIDEO -> hasColour = containsElement(buf, contentStart, contentStart + size.toInt(), ID_COLOUR)
                 ID_BLOCK_ADDITION_MAPPING -> {
                     val content = String(buf, contentStart, size.toInt(), Charsets.ISO_8859_1)
                     if (DV_FOURCCS.any { content.contains(it) }) {
@@ -229,8 +243,20 @@ object MkvDvPatcher {
             r.pos = contentStart + size.toInt()
         }
         return if (type == 1L && codecId.startsWith("V_MPEGH/ISO/HEVC") && number > 0) {
-            Pair(number, nalLengthSize)
+            VideoTrackInfo(number, nalLengthSize, hasColour)
         } else null
+    }
+
+    private fun containsElement(buf: ByteArray, from: Int, to: Int, wanted: Long): Boolean {
+        val r = Reader(buf).apply { pos = from }
+        while (r.pos < to - 1) {
+            val id = r.readId() ?: return false
+            val size = r.readSize() ?: return false
+            if (id == wanted) return true
+            if (r.pos + size > to) return false
+            r.pos += size.toInt()
+        }
+        return false
     }
 
     private fun readUint(buf: ByteArray, off: Int, len: Int): Long {

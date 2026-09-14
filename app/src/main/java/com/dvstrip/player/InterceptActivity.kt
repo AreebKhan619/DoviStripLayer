@@ -124,7 +124,8 @@ class InterceptActivity : AppCompatActivity() {
                             Log.i(
                                 "DVStrip",
                                 "patch mode: ${prepared.first.size} patches, len=${prepared.second}, " +
-                                    "rpuRewrite=${prepared.third != null}"
+                                    "rpuRewrite=${prepared.third != null}, " +
+                                    "colourElement=${prepared.third?.hasColourElement}"
                             )
                             startedProxy = true
                             ProxyService.startPatch(

@@ -67,6 +67,13 @@ class DvPatcherTest {
     // --- MKV ---
 
     @Test
+    fun `analyze detects the video track colour element`() {
+        // The fixture was muxed by ffmpeg, which writes a Colour element from the HDR VUI.
+        val meta = MkvDvPatcher.analyze(ByteSource(fixtureBytes("p81_dv.mkv")))!!
+        assertTrue(meta.hasColourElement)
+    }
+
+    @Test
     fun `mkv block addition mapping is voided`() {
         val data = fixtureBytes("p81_dv.mkv")
         val patches = MkvDvPatcher.findPatches(ByteSource(data))
