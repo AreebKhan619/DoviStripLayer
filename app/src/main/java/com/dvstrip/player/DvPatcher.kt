@@ -126,7 +126,13 @@ class MkvMeta(
      * only learn the stream is HDR from the bitstream VUI mid-decode, and some pipelines
      * then don't switch the display to HDR mode until a codec reconfigure (seek/crop).
      */
-    val hasColourElement: Boolean = false
+    val hasColourElement: Boolean = false,
+    /**
+     * True when a Colour element was synthesized in place (donating the DV BlockAdditionMapping's
+     * bytes) so the container declares HDR10 from the first frame. Same-length edit — offsets
+     * and seeking are unaffected. Carried in [patches].
+     */
+    val colourInjected: Boolean = false
 )
 
 object MkvDvPatcher {
@@ -168,7 +174,7 @@ object MkvDvPatcher {
         var videoTrack = -1L
         var nalLengthSize = 4
         var firstCluster = -1L
-        var hasColour = false
+        var videoInfo: VideoTrackInfo? = null
 
         while (r.pos < head.size - 2) {
             val elementStart = r.pos
@@ -190,7 +196,7 @@ object MkvDvPatcher {
                             if (videoTrack < 0) {
                                 videoTrack = video.number
                                 nalLengthSize = video.nalLengthSize
-                                hasColour = video.hasColour
+                                videoInfo = video
                             }
                         }
                     }
@@ -201,10 +207,30 @@ object MkvDvPatcher {
             r.pos += size.toInt()
         }
         if (firstCluster < 0) return null
-        return MkvMeta(patches, firstCluster, videoTrack, nalLengthSize, hasColour)
+
+        // If the HDR video track carries no Colour element, synthesize one in place by donating
+        // the DV BlockAdditionMapping's bytes (already destined to become a Void). Same length,
+        // so it supersedes that element's void patch and leaves every offset untouched.
+        var colourInjected = false
+        val vi = videoInfo
+        if (vi != null && !vi.hasColour) {
+            val inj = buildColourInjectionPatch(head, vi.teContentStart, vi.teContentEnd)
+            if (inj != null) {
+                patches.removeAll { it.offset >= vi.teContentStart && it.offset < vi.teContentEnd }
+                patches.add(inj)
+                colourInjected = true
+            }
+        }
+        return MkvMeta(patches, firstCluster, videoTrack, nalLengthSize, vi?.hasColour ?: false, colourInjected)
     }
 
-    class VideoTrackInfo(val number: Long, val nalLengthSize: Int, val hasColour: Boolean)
+    class VideoTrackInfo(
+        val number: Long,
+        val nalLengthSize: Int,
+        val hasColour: Boolean,
+        val teContentStart: Int,
+        val teContentEnd: Int
+    )
 
     /** Returns track info when this entry is the HEVC video track. */
     private fun parseTrackEntry(
@@ -243,7 +269,7 @@ object MkvDvPatcher {
             r.pos = contentStart + size.toInt()
         }
         return if (type == 1L && codecId.startsWith("V_MPEGH/ISO/HEVC") && number > 0) {
-            VideoTrackInfo(number, nalLengthSize, hasColour)
+            VideoTrackInfo(number, nalLengthSize, hasColour, from, to)
         } else null
     }
 
@@ -263,6 +289,129 @@ object MkvDvPatcher {
         var v = 0L
         for (i in 0 until len) v = (v shl 8) or (buf[off + i].toLong() and 0xFF)
         return v
+    }
+
+    private const val ID_COLOUR_MATRIX = 0x55B1L
+    private const val ID_COLOUR_RANGE = 0x55B9L
+    private const val ID_COLOUR_TRANSFER = 0x55BAL
+    private const val ID_COLOUR_PRIMARIES = 0x55BBL
+    private const val ID_VOID = 0xECL
+
+    /**
+     * Build a same-length rewrite of a TrackEntry's content that: (a) removes the DV
+     * BlockAdditionMapping, (b) appends a Colour element (HDR10: BT.2020 NCL / PQ / limited
+     * range) inside the Video element, and (c) pads the freed bytes with a Void so the
+     * TrackEntry — and therefore every downstream byte offset — keeps its exact length.
+     * Returns null if the structure isn't amenable (no Video, no DV donor, already has Colour,
+     * or the donor is too small to fund the Colour element).
+     */
+    private fun buildColourInjectionPatch(head: ByteArray, teContentStart: Int, teContentEnd: Int): Patch? {
+        val children = topChildren(head, teContentStart, teContentEnd)
+        val video = children.firstOrNull { it.id == ID_VIDEO } ?: return null
+        val donor = children.firstOrNull {
+            it.id == ID_BLOCK_ADDITION_MAPPING &&
+                String(head, it.contentStart, (it.end - it.contentStart), Charsets.ISO_8859_1)
+                    .let { s -> DV_FOURCCS.any { s.contains(it) } }
+        } ?: return null
+        if (containsElement(head, video.contentStart, video.end, ID_COLOUR)) return null
+
+        val colour = buildColourElement()
+        val newVideo = ByteArray(2).let {
+            // Rebuild the Video header (id 0xE0 + new size) around the original content + Colour.
+            val videoContent = head.copyOfRange(video.contentStart, video.end)
+            val newSize = videoContent.size + colour.size
+            byteArrayOf(0xE0.toByte()) + encodeVint(newSize.toLong()) + videoContent + colour
+        }
+
+        val originalLen = teContentEnd - teContentStart
+        val out = java.io.ByteArrayOutputStream()
+        for (c in children) {
+            when {
+                c === video -> out.write(newVideo)
+                c === donor -> { /* dropped; space becomes the Void below */ }
+                else -> out.write(head, c.start, c.end - c.start)
+            }
+        }
+        val voidTotal = originalLen - out.size()
+        if (voidTotal != 0 && voidTotal < 2) return null
+        if (voidTotal >= 2) out.write(buildVoid(voidTotal))
+        val result = out.toByteArray()
+        if (result.size != originalLen) return null
+        return Patch(teContentStart.toLong(), result)
+    }
+
+    private class Child(val id: Long, val start: Int, val contentStart: Int, val end: Int)
+
+    private fun topChildren(buf: ByteArray, from: Int, to: Int): List<Child> {
+        val list = mutableListOf<Child>()
+        val r = Reader(buf).apply { pos = from }
+        while (r.pos < to - 1) {
+            val start = r.pos
+            val id = r.readId() ?: break
+            val size = r.readSize() ?: break
+            val contentStart = r.pos
+            val end = contentStart + size.toInt()
+            if (size < 0 || end > to) break
+            list.add(Child(id, start, contentStart, end))
+            r.pos = end
+        }
+        return list
+    }
+
+    /** HDR10 Colour element: MatrixCoefficients=9, TransferCharacteristics=16 (PQ), Primaries=9, Range=1. */
+    private fun buildColourElement(): ByteArray {
+        fun u8(id: Long, value: Int): ByteArray = encodeId(id) + byteArrayOf(0x81.toByte(), value.toByte())
+        val body = u8(ID_COLOUR_MATRIX, 9) + u8(ID_COLOUR_TRANSFER, 16) +
+            u8(ID_COLOUR_PRIMARIES, 9) + u8(ID_COLOUR_RANGE, 1)
+        return encodeId(ID_COLOUR) + encodeVint(body.size.toLong()) + body
+    }
+
+    /** EBML Void of exactly [total] bytes: 0xEC id + size vint + zeroed payload. */
+    private fun buildVoid(total: Int): ByteArray {
+        for (sizeLen in 1..8) {
+            val payload = total - 1 - sizeLen
+            if (payload < 0) continue
+            val maxPayload = (1L shl (7 * sizeLen)) - 2 // avoid all-ones (reserved "unknown")
+            if (payload > maxPayload) continue
+            val out = ByteArray(total)
+            out[0] = ID_VOID.toByte()
+            var v = payload.toLong() or (1L shl (7 * sizeLen))
+            for (i in sizeLen downTo 1) {
+                out[i] = (v and 0xFF).toByte()
+                v = v shr 8
+            }
+            return out // remaining bytes already zero
+        }
+        throw IllegalArgumentException("cannot build void of $total bytes")
+    }
+
+    private fun encodeId(id: Long): ByteArray {
+        val len = when {
+            id <= 0xFFL -> 1
+            id <= 0xFFFFL -> 2
+            id <= 0xFFFFFFL -> 3
+            else -> 4
+        }
+        val out = ByteArray(len)
+        var v = id
+        for (i in len - 1 downTo 0) {
+            out[i] = (v and 0xFF).toByte()
+            v = v shr 8
+        }
+        return out
+    }
+
+    /** Minimal-width EBML size vint for [value]. */
+    private fun encodeVint(value: Long): ByteArray {
+        var len = 1
+        while (value > (1L shl (7 * len)) - 2) len++
+        val out = ByteArray(len)
+        var v = value or (1L shl (7 * len))
+        for (i in len - 1 downTo 0) {
+            out[i] = (v and 0xFF).toByte()
+            v = v shr 8
+        }
+        return out
     }
 
     /** Element start = content start minus (id length + size-field length), recomputed exactly. */

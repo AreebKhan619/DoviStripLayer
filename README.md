@@ -30,9 +30,12 @@ Sources supported: local files (`file://`, `content://`), direct HTTP(S) file UR
      proxy** (`127.0.0.1:46836`): the file is served byte-identical with full HTTP Range
      support — native seeking, real duration, instant start, all tracks kept — while a
      handful of same-size byte patches neutralize the container's Dolby Vision signaling
-     (`dvvC`/`dvh1` in MP4, BlockAdditionMapping in MKV) in flight. With the container no
-     longer declaring DV, players and TV pipelines treat the video as plain HEVC/HDR10 and
-     ignore the in-band RPU data.
+     (`dvvC`/`dvh1` in MP4, BlockAdditionMapping in MKV) in flight, and (MKV) rewrite the
+     in-bitstream DV RPU NAL units into filler NALs. With DV gone at both the container and
+     bitstream level, players and TV pipelines treat the video as plain HEVC/HDR10.
+     For MKVs whose track header lacks a `Colour` element, an HDR10 `Colour` element is
+     synthesized in place (reusing the removed DV mapping's bytes, same length) so the TV
+     switches to HDR mode from the first frame instead of only after a seek.
    - *Adaptive inputs (m3u8/DASH) and odd containers* → fallback: one continuous FFmpeg
      session strips DV into a rolling local HLS window. Live-window semantics: limited
      seeking, subtitles dropped.

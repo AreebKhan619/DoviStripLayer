@@ -1,6 +1,7 @@
 package com.dvstrip.player
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -71,6 +72,35 @@ class DvPatcherTest {
         // The fixture was muxed by ffmpeg, which writes a Colour element from the HDR VUI.
         val meta = MkvDvPatcher.analyze(ByteSource(fixtureBytes("p81_dv.mkv")))!!
         assertTrue(meta.hasColourElement)
+        assertFalse(meta.colourInjected) // already present -> nothing to inject
+    }
+
+    @Test
+    fun `no-colour DV mkv gets a same-length colour element injected`() {
+        val data = fixtureBytes("p81_nocolour.mkv")
+        val meta = MkvDvPatcher.analyze(ByteSource(data))!!
+        assertFalse(meta.hasColourElement)
+        assertTrue(meta.colourInjected)
+
+        val patched = applyPatches(data, meta.patches)
+        assertEquals("injection must not change file length", data.size, patched.size)
+
+        // Re-analyze the patched bytes: Colour now present, DV mapping gone.
+        val after = MkvDvPatcher.analyze(ByteSource(patched))!!
+        assertTrue(after.hasColourElement)
+        assertFalse(after.colourInjected)
+
+        File("build/patched").mkdirs()
+        File("build/patched/p81_injected.mkv").writeBytes(patched)
+    }
+
+    @Test
+    fun `injection is idempotent - already-colour file is untouched`() {
+        val data = fixtureBytes("p81_dv.mkv")
+        val meta = MkvDvPatcher.analyze(ByteSource(data))!!
+        assertFalse(meta.colourInjected)
+        // The DV mapping is still voided (container DV signaling removed).
+        assertTrue(meta.patches.isNotEmpty())
     }
 
     @Test

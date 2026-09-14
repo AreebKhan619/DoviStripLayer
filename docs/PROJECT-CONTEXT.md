@@ -125,6 +125,19 @@ blocks, mid-cluster range starts) degrades to pass-through rather than corruptin
 
 ## Known limitations / future work (ordered by likely impact)
 
+0. **HDR badge only after seek/crop (fixed 2026-09-14):** some TVs set display HDR mode at
+   playback start from the container's MKV `Colour` element (0x55B0 under Video), and only
+   fall back to the bitstream VUI on a codec reconfigure (seek/crop). DV remuxes often omit
+   `Colour`. `MkvDvPatcher.buildColourInjectionPatch` synthesizes an HDR10 `Colour`
+   (Matrix=9/Transfer=16/Primaries=9/Range=1) in place by donating the removed DV
+   BlockAdditionMapping's bytes + a Void — SAME LENGTH, so offsets/Cues/seeking are untouched.
+   Only fires when the track lacks `Colour` AND a DV mapping donor is present and big enough
+   (>= ~21 bytes). Logged as `colourInjected=true`. Negative fixture: `p81_nocolour.mkv`
+   (Colour id byte-swapped to 0x53FF). Validate with `/tmp/ebml_colour_check.py`-style EBML
+   parsing, NOT ffprobe (ffprobe reads color from the bitstream VUI and can't see the
+   container element's absence). Limitation: an in-band-only DV MKV with no BlockAdditionMapping
+   donor and no Colour can't be fixed this way — would need the size-changing virtual-file
+   header rewrite (SeekHead/Cues offset remap), deferred as it wasn't needed for the user's files.
 1. **P7 dual-layer MKV (UHD-BD remuxes):** EL+RPU may live in BlockAdditions per block, not
    in-band. Voiding the mapping hides them from demuxers, but the BlockAdditional payloads
    are not rewritten. If a P7 file misbehaves: extend the transformer to blank BlockMore/
