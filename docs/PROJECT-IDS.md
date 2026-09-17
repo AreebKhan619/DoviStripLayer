@@ -13,18 +13,30 @@ relates to this app.
 
 | # | INI | Role |
 |---|---|---|
-| **179** | `IN_VU_UG55AK680N_PWM47K_HV550QUB_F70_V20_XMX_60HZ_LCD_12V_6R10W.ini` | **CURRENT — the default. This is the value to return to.** |
-| **193** | `IN_VU_UG55AK680N_PWM47K_HV550QUB_F70_V20_XMX_60HZ_LCD_12V_6R10W_DV.ini` | **TARGET — identical to 179 with `_DV` appended.** |
+| **179** | `IN_VU_UG55AK680N_PWM47K_HV550QUB_F70_V20_XMX_60HZ_LCD_12V_6R10W.ini` | The original factory default (as shipped). |
+| **193** | `IN_VU_UG55AK680N_PWM47K_HV550QUB_F70_V20_XMX_60HZ_LCD_12V_6R10W_DV.ini` | **SELECTED 2026-09-17 — this is what the TV is on now.** |
 
 #193 matches #179 character-for-character: same model `UG55AK680N`, same panel **and revision**
 `HV550QUB_F70_V20`, same backlight driver `PWM47K`, same `XMX`, `60HZ`, `LCD`, `12V`, `6R10W`.
-It is the exact hardware twin, so it does **not** carry the wrong-panel-calibration risk that
-every other Dolby project below does.
+
+> ### ❌ It was tried, and it did not enable Dolby Vision
+>
+> The switch itself worked — `Project Name` now reads `…_LCD_6R10W_DV` and the panel config is
+> unchanged. But after the wipe and reboot, **every measurement is identical to before**:
+> `ro.media.xml_variant.codecs` is still `_4k_3`, `mSupportedHdrTypes` is still `[2, 3]`, and
+> the factory PQ page still reports **`DV MD5 : File not exist or can not read.`** while PQ,
+> PQ_HDR and PQ_OSD all hash fine.
+>
+> **The firmware ships the DV project definition but not the DV calibration data.** No project
+> selection can conjure a file that was never flashed. Full write-up in `DEVICE-REPORT.md`
+> §11.3. No damage: picture correct, Dolby Audio unaffected, nothing regressed.
+>
+> The TV was **left on 193** — reverting costs another wipe for no measurable gain, and if a
+> future firmware ever ships the DV tables this is the only config where they would apply.
 
 > ⚠️ **Selecting any project triggers a full factory reset.** `ProjectIdFragment` broadcasts
 > `android.intent.action.FACTORY_RESET` immediately after `setProjectId()` — it is in the code
-> path, not a preference, and there is no way to skip it. The owner has ruled this out, so
-> this file is a record, not a plan.
+> path, not a preference, and there is no way to skip it. Budget one wipe per attempt.
 
 ## Every Dolby / DV project — all 10, across the complete list
 

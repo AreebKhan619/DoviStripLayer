@@ -147,10 +147,20 @@ project in the list — the rest are OLED, or 65"/75", or a different panel revi
 The captured list, every Dolby/DV candidate with a verdict, and the read-only procedure to
 re-read it live in **`docs/PROJECT-IDS.md`**.
 
-**The blocker is the wipe, and it is not optional.** `ProjectIdFragment` broadcasts
-`android.intent.action.FACTORY_RESET` immediately after `setProjectId()` — it is in the code
-path, not a preference. The owner has ruled that out, so this stays a documented lead rather
-than a plan. Full analysis in `docs/DEVICE-REPORT.md` §11.2–11.3.
+### ❌ #193 was selected on 2026-09-17. It did not work.
+
+The switch succeeded (`Project Name` now ends `_DV`, panel config unchanged) but **nothing
+else changed**: `ro.media.xml_variant.codecs` is still `_4k_3`, `mSupportedHdrTypes` is still
+`[2, 3]`, and the factory PQ page still shows `DV MD5 : File not exist or can not read.` while
+PQ, PQ_HDR and PQ_OSD hash normally.
+
+**The firmware ships the DV project definition but not the DV calibration file.** The bottleneck
+was never project selection — it is the missing table, and `/mnt/vendor/tvconfigs` is `ro` and
+denied without root, so it cannot be supplied. Cost: one factory reset. No damage; picture and
+Dolby Audio are fine. The TV was left on #193.
+
+**So this app remains the answer**, and that is now a tested conclusion rather than an
+assumption. Full write-up and the remaining (poor) options in `docs/DEVICE-REPORT.md` §11.3.
 
 **Until that is proven to work, rewriting the bytes above the decoder remains the only
 intervention point, which is what this app does.** The two-command verdict after any project

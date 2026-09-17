@@ -510,23 +510,78 @@ flagged inline, every Dolby/DV project scored for suitability, and the read-only
 re-read it. The complete list was searched for `dolby` / `_dv`: there are exactly **10** such
 projects and **#193 is the only one matching this panel**.
 
-#### Next step when picking this up again
+#### ❌ OUTCOME — tried 2026-09-17, it does not work
 
-Static analysis is done — the app has been decompiled and it holds nothing further. `ProjectIdLogic`
-turned out to be an empty stub (all the work is in `ProjectIdFragment`), and nothing in the app
-filters or flags DV-capable projects, so candidate selection cannot be reduced to a lookup.
+**Project 193 was selected. The switch succeeded. Dolby Vision did not come back.**
 
-What remains is **the project INI list, visible only on the TV**. Open the factory app's Project
-ID screen and record every entry plus the current selection. Then the loop is:
+The factory menu confirms the project changed — `Project Name` now reads
+`IN_VU_UG55AK680N_PWM47K_HV550QUB_F70_V20_XMX_60HZ_LCD_6R10W_DV`, and `Panel Name` is unchanged
+at `PWM47K_HV550QUB_F70_V20.ini`. So this is a real negative result, not a failed switch.
 
-1. Note the current Project ID. **This is the only way back.**
-2. Switch to a candidate whose INI name suggests the same panel; accept the wipe and reboot.
-3. Check **DV MD5** in the picture page — data instead of `File not exist or can not read.`
-   means that project ships a DV picture table.
-4. Run the two commands above. `_4k_2` means the decoders registered; a **`1`** in
-   `mSupportedHdrTypes` means DV actually reaches the panel.
-5. Judge the picture. Right colours = done. Wrong colours = that project's calibration is for a
-   different panel; go back.
+Every measurement after the wipe and reboot is **identical to before**:
+
+| Check | Before | After #193 |
+|---|---|---|
+| `ro.boot.variant.codecs` | `4k_2` | `4k_2` |
+| `ro.media.xml_variant.codecs` | `_4k_3` | `_4k_3` |
+| `mSupportedHdrTypes` | `[2, 3]` | `[2, 3]` |
+| `ro.boot.product.vendor.sku` | `x` | `x` |
+
+And the factory **PQ Adjust** page shows why:
+
+```
+PQ MD5      : E8991C6749721F5EBD806DD4229A83EA
+PQ_HDR MD5  : 24CF096EB78592816F7849FBDFC69FF7
+PQ_OSD MD5  : 77C65DB854BB5D6D39AB9F66A29391FF
+DV MD5      : File not exist or can not read.     <-- still absent
+```
+
+That string is exactly `byteToString(null)` from §11.2 — `getMd5()` returned null because the
+path in `[MISC_PQ_MAP_CFG] → DV` does not exist. **The other three picture tables are present
+with real hashes; only the Dolby Vision one is missing.**
+
+**Conclusion: the firmware ships the DV project *definition* but not the DV *data*.** Selecting
+a DV project cannot conjure a calibration file that was never flashed into this unit's
+`/mnt/vendor/tvconfigs`. The bottleneck was never project selection — it is the missing table,
+and it is not reachable (tvconfigs is `ro` and denied without root, §14).
+
+This also strengthens §11.2's causal story without fully proving it: three PQ tables present and
+hashing fine, the DV one absent, and the runtime still downgrading `4k_2` → `_4k_3`. Consistent,
+but not isolated — that would need a case where DV MD5 *is* present, which we do not have.
+
+**Cost/benefit of what was tried:** one full factory reset, no functional change, no damage.
+Panel geometry and colour are correct (as predicted — #193 carries the same
+`HV550QUB_F70_V20` config), Dolby Audio is unaffected, and nothing regressed. The unit was left
+on #193 rather than reverted: another wipe buys nothing measurable, and if a future firmware
+ever ships the DV tables, being on the DV project is the only configuration where they would
+take effect.
+
+**The byte-rewriting approach this app implements remains the answer.**
+
+#### Is anything left to try?
+
+Honestly, very little — and nothing cheap.
+
+The one loose thread: the owner recalls that an earlier project change (before this
+investigation) *did* show DV MD5 data. If that memory is accurate, some project's DV path
+resolves to a file that exists, and the tables are not wholly absent from tvconfigs. Every such
+candidate is a **wrong-panel** project though (§ the table above: OLED, 65″/75″, or revision
+E1D), so success would mean Dolby Vision running on another panel's calibration — the
+"working DV with wrong colour" outcome — at the price of another wipe per attempt, plus one more
+to get back. Poor odds, real cost.
+
+Ruled out for the record:
+
+- **Restoring just the DV file.** `/mnt/vendor/tvconfigs` is mounted `ro` and denied to shell;
+  no root, locked bootloader, verity enforcing (§13).
+- **Editing the INI** to point `[MISC_PQ_MAP_CFG] DV` at an existing table — same access wall,
+  and it would be another panel's data anyway.
+- **USB firmware upgrade** to a DV-provisioned image. Present in the factory menu, but that is
+  flashing vendor firmware on a locked retail set to chase a maybe. Not advisable.
+
+So the practical position is closed: this TV decodes no Dolby Vision, the silicon could, the
+data isn't there, and it cannot be put there. Rewriting the bytes above the decoder stays the
+only lever.
 
 ### 11.4 What holds regardless of the above
 
