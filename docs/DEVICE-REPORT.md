@@ -301,35 +301,95 @@ The corresponding decoder declarations live in the `_4k_1 / _4k_2 / _4k_4 / _4k_
 _4k_14` codec variant files, OMX and Codec2, secure and non-secure. `FW_DVLOGO_a/b` partitions
 exist as part of the common board layout.
 
-### 11.2 What actually gates it
+### 11.2 The unit is a Dolby-tier product running with Dolby stripped at runtime
 
-No silicon is missing. The limitation is four gates of very different hardness:
+**This overturns an earlier reading in this very document — that the model was never a Dolby
+product and its DV tuning data "was never generated". Both were wrong.**
 
-| # | Gate | Nature | Movable? |
-|---|---|---|---|
-| 1 | Codec manifest selects `_4k_3` | pure configuration | conceptually a one-property change |
-| 2 | Display HAL advertises HDR10/HLG only | configuration tied to panel provisioning | same class |
-| 3 | **Dolby display-management tuning + licence** | **data that was never generated for this model** | **no — cannot be synthesized** |
-| 4 | Locked bootloader + enforcing verity | device policy | no (§13) |
+The bootloader declares a codec tier that is not the one in force:
 
-Gate 3 is the real wall. DV's display-management stage maps the RPU's dynamic metadata onto a
-specific panel's measured peak luminance, black level, primaries and cross-talk. Those values
-are produced by Dolby's certification of a particular TV model. This model was never certified,
-so enabling the decoder would feed a mapping stage with nothing to map to.
+| Property | Value | Origin |
+|---|---|---|
+| `ro.boot.variant.codecs` | **`4k_2`** | bootloader (project config) |
+| `ro.media.xml_variant.codecs` | **`_4k_3`** | set at runtime |
+| `ro.media.xml_variant.codecs_performance` | `_4k_3_rtd6748` | set at runtime |
 
-The panel is **not** the disqualifier it looks like: 500 nits is low-end, but Dolby Vision
-ships on panels in that range — it is an end-to-end format, not a brightness threshold. The
-binding constraint is certification, not nits.
+The two tiers differ by exactly two `<Include>` lines:
 
-So "firmware is limiting it" is accurate in that the chip is fully capable — but the limit is
-the executed form of a commercial decision, not an oversight or a forgotten switch, and one
-layer of it is *absent data* rather than a disabled feature.
+| `media_codecs_4k_2.xml` — the declared project tier | `media_codecs_4k_3.xml` — what actually loaded |
+|---|---|
+| `media_codecs_realtek_video_4k_2.xml` | `media_codecs_realtek_video_4k_2.xml` |
+| **`media_codecs_realtek_video_dolby_vision_4k.xml`** (10 DV decoders) | *(absent)* |
+| `media_codecs_realtek_audio_basic.xml` | `media_codecs_realtek_audio_basic.xml` |
+| **`media_codecs_realtek_audio_dolby.xml`** | *(absent)* |
 
-**Dolby Audio is licensed on this unit (§9); Dolby Vision is not.** These are separately
-licensed, separately certified products, and "Dolby Audio yes, Dolby Vision no" is a standard
-product tier — Realtek even ships a `media_codecs_dolby_audio_only.xml` for it. The audio path
-is enabled all the way to Atmos while the video path is enabled nowhere, which reads as
-deliberate, granular provisioning rather than an oversight.
+`4k_3` is `4k_2` **minus the two Dolby includes** — identical video base, identical audio base.
+**The project this unit declares is the Dolby tier; something downgraded it at runtime.**
+
+The selection is dynamic, not baked into the build. `/vendor/etc/init/mediainit.rc` starts
+`/vendor/bin/mediainit` at `early_hal`, and init derives the properties from what it publishes:
+
+```
+on property:ro.vendor.rtk.media.boot.variant.codecs=*
+    setprop ro.media.xml_variant.codecs _${ro.vendor.rtk.media.boot.variant.codecs}
+    setprop ro.media.xml_variant.codecs_performance _${…}_${ro.hardware}
+
+on property:ro.vendor.rtk.media.product.vendor.sku=*
+    setprop ro.boot.product.vendor.sku ${ro.vendor.rtk.media.product.vendor.sku}
+```
+
+**Most likely cause — hypothesis, not proven.** The factory app reports **DV MD5 absent** on
+this unit: the Dolby Vision provisioning blob is missing or fails its checksum, so media init
+fails safe to the Dolby-less tier. The owner reports that after changing Project ID once (which
+wiped user data) the factory app *did* show DV MD5 data, though DV decoding was never confirmed.
+
+Tracing it further is impossible from an unprivileged shell: `/vendor/bin/mediainit` is
+SELinux-protected (`mediainit_exec` — cannot be read or pulled), `/mnt/vendor/tvconfigs`
+(`mmcblk0p33`, ro), `/mnt/vendor/factory` (`p4`, rw), `/mnt/vendor/factory_ro` (`p6`, ro) and
+`/mnt/vendor/impdata` (`p36`, rw) are all denied, and even `/vendor/build.prop` is unreadable.
+
+### 11.3 The open lead — Project ID via the factory app
+
+`com.toptech.tvfactory` and `com.toptech.factorytoolsgtv` are installed and expose **Project ID**
+selection. Project ID drives the bootloader-supplied properties and the provisioning data, and
+the partitions it writes are mounted **rw**. This is a **vendor-sanctioned path requiring
+neither root nor an unlocked bootloader** — which is exactly why the earlier "no on-device
+workaround exists" conclusion was wrong. The locked bootloader never blocked this route.
+
+**Objective test after any project change — two commands, no guesswork:**
+
+```sh
+adb shell 'getprop ro.boot.variant.codecs; getprop ro.media.xml_variant.codecs'
+adb shell 'dumpsys display | grep -o "mSupportedHdrTypes=\[[^]]*\]"'
+```
+
+- If `ro.media.xml_variant.codecs` becomes `_4k_2`, the DV decoders are registered.
+- **The second command is the real success criterion.** It currently reads `[2, 3]`. If **`1`**
+  (DOLBY_VISION) appears, the display pipeline will output DV and the problem is solved at
+  source. A codec flip *without* the HDR list changing would mean a registered decoder feeding
+  a display that still cannot present DV — plausibly the same washed-out result by a new route.
+
+> **Before changing anything: record the current Project ID and photograph the factory screens.**
+> Project ID also selects panel timings, backlight curve, tuner region and audio tuning. A
+> project built for a different panel can produce wrong geometry, wrong colour, or a display too
+> broken to navigate back with — and recovery depends entirely on knowing what to return to.
+> It also wipes user data.
+
+**If it works, it retires this app entirely — and additionally fixes Profile 5**, which byte
+rewriting fundamentally cannot address (no HDR10 base layer to fall back to). If it half-works,
+nothing is lost and the app still covers the gap.
+
+### 11.4 What holds regardless of the above
+
+- The silicon decodes DV at 4K60 (§11.1).
+- The panel is **not** the disqualifier it appears to be: 500 nits is low-end, but Dolby Vision
+  ships on panels in that range — it is an end-to-end format, not a brightness threshold.
+- Dolby **Audio** works on this unit through the audio HAL (§9) *even though* `4k_3` drops
+  `media_codecs_realtek_audio_dolby.xml`, because HAL-side decoding never used MediaCodec at
+  all. No contradiction between the two findings.
+- **As shipped and unmodified, the device registers no `video/dolby-vision` codec and outputs
+  no DV.** The byte-rewriting approach stays necessary until a project change is *proven* to
+  work by the two commands above.
 
 ## 12. Connectivity
 
@@ -395,6 +455,14 @@ uid 2000:
 `/sys/class/mmc_host/mmc0/*/cid` and friends · `dumpsys media.drm` (service not registered) ·
 `/sys/class/dolbyvisionEDR/dolbyvisionEDR0/*` attributes.
 
+Also denied, and directly relevant to §11.2 — the project-config chain cannot be traced from
+shell on this build:
+
+`/vendor/bin/mediainit` (SELinux `mediainit_exec`; neither readable nor `adb pull`-able) ·
+`/mnt/vendor/tvconfigs` (`mmcblk0p33`, ro) · `/mnt/vendor/factory` (`p4`, rw) ·
+`/mnt/vendor/factory_ro` (`p6`, ro) · `/mnt/vendor/impdata` (`p36`, rw) ·
+`/vendor/build.prop`, `/system/build.prop`, `/odm/etc/build.prop`.
+
 ## 15. Reproducing this report
 
 Connect first — **the TV's IP changes**, so read it from the TV's network settings:
@@ -434,10 +502,31 @@ adb shell 'dumpsys audio' | grep -oE 'ENCODING_[A-Z0-9_]+' | sort -u
 adb shell 'getprop ro.boot.product.vendor.sku'                       # -> x
 adb shell 'grep -oE "AUDIO_FORMAT_[A-Z0-9_]+" /vendor/etc/audio/sku_x/audio_policy_configuration.xml | sort -u'
 
-# DRM / Dolby Vision
+# DRM
 adb shell 'service list | grep -i drm'
 adb shell 'lshal | grep -iE "drm|crypto"'
-adb shell 'ls /sys/class/ | grep -i dolby'
+
+# Dolby Vision — silicon capability vs what this SKU enables
+adb shell 'ls /sys/class/ | grep -i dolby'                           # -> dolbyvisionEDR
+adb shell 'for f in /vendor/etc/*rtd6748*.xml; do printf "%s : %s\n" \
+    "$(basename $f)" "$(grep -ic dolby-vision $f)"; done'            # measured DV perf points
+adb shell 'grep -A3 dolby-vision /vendor/etc/media_codecs_performance_4k_2_rtd6748.xml | head'
+
+# THE PROJECT-TIER MISMATCH (§11.2) — the most important check in this document
+adb shell 'echo "bootloader : $(getprop ro.boot.variant.codecs)"; \
+           echo "effective  : $(getprop ro.media.xml_variant.codecs)"'
+adb shell 'grep -i Include /vendor/etc/media_codecs_4k_2.xml'        # declared tier: has Dolby
+adb shell 'grep -i Include /vendor/etc/media_codecs_4k_3.xml'        # in force: Dolby removed
+adb shell 'cat /vendor/etc/init/mediainit.rc'                        # how the tier is selected
+adb shell 'getprop | grep "^\[ro.boot\."'                            # all bootloader-supplied props
+adb shell 'pm list packages | grep -iE "factory|toptech"'            # the factory app
+adb shell 'mount | grep -iE "tvconfig|factory|impdata"'              # project config partitions
+
+# AFTER A PROJECT ID CHANGE — did Dolby Vision actually come back? (§11.3)
+adb shell 'getprop ro.boot.variant.codecs; getprop ro.media.xml_variant.codecs'
+adb shell 'dumpsys display | grep -o "mSupportedHdrTypes=\[[^]]*\]"'  # success = a "1" appears
+
+# Partition layout
 adb shell 'ls /dev/block/by-name/'
 ```
 
@@ -459,13 +548,14 @@ Every load-bearing claim and the independent sources that agree on it.
 | **Dolby Audio present** | `dumpsys audio` runtime encodings on speaker *and* hdmi_arc; `/vendor/etc/audio/sku_x/audio_policy_configuration.xml` declares the identical five formats; `ro.boot.product.vendor.sku=x` selects that file |
 | DV driver live in kernel | `/sys/class/dolbyvisionEDR/dolbyvisionEDR0/` present, created at boot, has a `dev` attribute |
 | **The SoC itself decodes DV at 4K60** | five `*rtd6748*` performance profiles declare `performance-point-3840x2160 = 60-60` for `video/dolby-vision` (measured capability, CTS-validated class of file); the profile this SKU selects declares none; DV decoder components exist in the `_4k_1/_4k_2/_4k_4/_4k_5/_4k_6/_4k_14` codec variants |
+| **The declared project tier is the Dolby tier, and was downgraded at runtime** | `ro.boot.variant.codecs=4k_2` (bootloader) vs `ro.media.xml_variant.codecs=_4k_3` (in force); `media_codecs_4k_3.xml` include list is `media_codecs_4k_2.xml`'s minus `…_dolby_vision_4k.xml` and `…_audio_dolby.xml`; `mediainit.rc` shows the value is set at runtime, not built in |
 | Bootloader locked / verity on | `ro.boot.flash.locked=1`; `ro.boot.verifiedbootstate=green`; `ro.boot.veritymode=enforcing`; all system mounts are `dm-*` |
 | Widevine present | vendor APEX `com.google.android.widevine.nonupdatable.apex`; registered AIDL `IDrmFactory/widevine` |
 
-### Corrections made during this capture
+### Corrections made to this document
 
-Two earlier conclusions were wrong and were caught by this cross-checking pass. Both are
-recorded because the *method* that produced them is the trap:
+Four earlier conclusions were wrong. They are recorded rather than quietly edited out, because
+in each case the *method* that produced them is the reusable lesson:
 
 1. **"The TV has no Dolby anything."** Drawn from an empty MediaCodec audio manifest. Wrong —
    Dolby audio is decoded by the audio DSP behind the audio HAL and never appears in a codec
@@ -476,5 +566,23 @@ recorded because the *method* that produced them is the trap:
    re-checking, but it had been verified against the wrong file. Resolve the `<Include>` chain
    from `ro.media.xml_variant.codecs` before trusting any codec claim.
 
-A third near-miss: grepping for `MediaCodec name="…" type="…"` found almost nothing, because
-decoders declare formats as nested `<Type>` children, not as an attribute. Read the file.
+3. **"The Dolby display-management tuning was never generated for this model."** Wrong, and it
+   was the load-bearing claim in the original §11.2. The bootloader declares this unit's project
+   as `4k_2` — the Dolby tier. The data is not nonexistent; it is *absent on this unit*
+   (factory app: **DV MD5 absent**). Do not infer "never existed" from "not present"; look for
+   the layer that *selects* configuration before concluding the configuration was never made.
+
+4. **"No on-device workaround exists."** Wrong. That assumed the only route to
+   `ro.media.xml_variant.codecs` was editing a verity-protected file, so a locked bootloader
+   settled it. The real route is the **Project ID** in `com.toptech.tvfactory`, writing
+   partitions that are mounted rw — a vendor-sanctioned path needing neither root nor an
+   unlocked bootloader. Enumerate the *intended* configuration mechanisms before declaring
+   something immutable.
+
+A near-miss worth the same caution: grepping for `MediaCodec name="…" type="…"` found almost
+nothing, because decoders declare formats as nested `<Type>` children, not as an attribute.
+Read the file.
+
+**The pattern across all four:** every error came from treating an absence as proof — an empty
+manifest, a missing file, an unreadable partition — instead of first establishing which layer
+owns the decision. Absence of evidence in the wrong layer is not evidence at all.

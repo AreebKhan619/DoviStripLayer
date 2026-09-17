@@ -90,11 +90,44 @@ failing; it makes the DV decision somewhere the fallback signal doesn't reach. T
 approach 3 below (all container signaling removed) *still* rendered washed out, and why
 player-level "disable DV" toggles are inert.
 
-**No on-device workaround exists.** Unrooted `user` build, SELinux enforcing, and Realtek
-exposes DV as a chardev to the media HAL — there is **no** Amlogic-style `dolby_vision_policy` /
-`dolby_vision_enable` sysfs knob to flip (don't go looking for `/sys/class/amdolby_vision/`;
-wrong vendor). Rewriting the bytes above the decoder is the only intervention point, which is
-what this app does. A vendor firmware fix is unlikely — this is a deliberate per-SKU config.
+**There is no *sysfs* knob** — Realtek exposes DV as a chardev to the media HAL, with no
+Amlogic-style `dolby_vision_policy` / `dolby_vision_enable` to flip. Don't go looking for
+`/sys/class/amdolby_vision/`; wrong vendor. And `/vendor` itself is immutable: unrooted `user`
+build, SELinux enforcing, dm-verity enforcing, bootloader locked.
+
+**But an on-device workaround may well exist — an earlier version of this document said it did
+not, and that was wrong.** The codec tier is chosen *at runtime*, not baked into the build, and
+the bootloader says this unit should be on the **Dolby** tier:
+
+| Property | Value |
+|---|---|
+| `ro.boot.variant.codecs` (bootloader / project config) | **`4k_2`** |
+| `ro.media.xml_variant.codecs` (actually in force) | **`_4k_3`** |
+
+`media_codecs_4k_3.xml` is `media_codecs_4k_2.xml` **minus exactly two includes** —
+`media_codecs_realtek_video_dolby_vision_4k.xml` (10 DV decoders) and
+`media_codecs_realtek_audio_dolby.xml`. Everything else is identical. So this is a Dolby-tier
+unit that got downgraded at boot by `/vendor/bin/mediainit` (see `/vendor/etc/init/mediainit.rc`).
+The likely trigger — **hypothesis, not proven** — is that the factory app reports **DV MD5
+absent**: the DV provisioning blob is missing, so media init fails safe.
+
+The factory app **`com.toptech.tvfactory`** exposes **Project ID** selection, which drives that
+provisioning and writes partitions mounted rw (`/mnt/vendor/factory`, `/mnt/vendor/impdata`).
+That is a vendor-sanctioned path needing **neither root nor an unlocked bootloader** — the
+locked bootloader never blocked it. Full analysis and the risk warnings are in
+`docs/DEVICE-REPORT.md` §11.2–11.3.
+
+**Until that is proven to work, rewriting the bytes above the decoder remains the only
+intervention point, which is what this app does.** The two-command verdict after any project
+change:
+
+```sh
+adb shell 'getprop ro.boot.variant.codecs; getprop ro.media.xml_variant.codecs'
+adb shell 'dumpsys display | grep -o "mSupportedHdrTypes=\[[^]]*\]"'   # success = a "1" appears
+```
+
+Record the current Project ID before touching anything: it also selects panel timings, backlight
+and tuner region, and it wipes user data.
 
 This also corroborates limitation 0: the panel exposes only HDR10/HLG and the framework picks
 the HDR mode at codec-configure time, hence "badge only after a seek/crop" unless the container
@@ -108,10 +141,20 @@ Re-derivation (run `grep` **on the device** — quote the whole remote command; 
 adb shell 'getprop ro.soc.manufacturer; getprop ro.soc.model'   # the real part: Realtek RTD2885N
 adb shell 'getprop ro.board.platform; getprop ro.hardware'      # the BSP name: rtd6748
 adb shell 'getprop | grep -i dolby'                             # expect: nothing
-adb shell 'getprop ro.media.xml_variant.codecs'
-adb shell 'grep -il dolby-vision /vendor/etc/media_codecs*.xml'
-adb shell 'ls /sys/class/ | grep -i dolby'
+adb shell 'ls /sys/class/ | grep -i dolby'                      # -> dolbyvisionEDR (driver live)
 adb shell 'dumpsys display | grep -iE "hdrCapabilities|supportedHdrTypes"'
+
+# The project-tier mismatch — the most important check here
+adb shell 'echo "bootloader : $(getprop ro.boot.variant.codecs)"; \
+           echo "effective  : $(getprop ro.media.xml_variant.codecs)"'
+adb shell 'grep -i Include /vendor/etc/media_codecs_4k_2.xml'   # declared tier: includes Dolby
+adb shell 'grep -i Include /vendor/etc/media_codecs_4k_3.xml'   # in force: Dolby removed
+adb shell 'cat /vendor/etc/init/mediainit.rc'                   # how the tier gets chosen
+adb shell 'pm list packages | grep -iE "factory|toptech"'       # the factory app
+
+# Resolve the codec chain before trusting ANY codec claim, then read the files whole:
+# decoders declare formats as nested <Type> children, so grepping for type="..." finds nothing.
+adb shell 'cat /vendor/etc/media_codecs_realtek_video_4k_2.xml'
 ```
 
 ## Dolby Vision facts that drove the design (all verified)
