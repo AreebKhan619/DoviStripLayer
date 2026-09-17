@@ -144,6 +144,9 @@ revision (`HV550QUB_F70_V20`), same `PWM47K`, `XMX`, `60HZ`, `12V`, `6R10W`. So 
 wrong-panel-calibration risk does **not** apply to this candidate (it does to every other Dolby
 project in the list — the rest are OLED, or 65"/75", or a different panel revision).
 
+The captured list, every Dolby/DV candidate with a verdict, and the read-only procedure to
+re-read it live in **`docs/PROJECT-IDS.md`**.
+
 **The blocker is the wipe, and it is not optional.** `ProjectIdFragment` broadcasts
 `android.intent.action.FACTORY_RESET` immediately after `setProjectId()` — it is in the code
 path, not a preference. The owner has ruled that out, so this stays a documented lead rather
@@ -338,5 +341,9 @@ blocks, mid-cluster range starts) degrades to pass-through rather than corruptin
 - Full hardware/platform report for the target TV: `docs/DEVICE-REPORT.md` (SoC, CPU/ABI, GPU,
   display, full codec tables, audio, DRM, boot security, plus a cross-confirmation ledger and
   the commands to regenerate it)
+- **Factory Project ID list: `docs/PROJECT-IDS.md`** — which project is the default
+  (**#179**, the one to return to), which is the Dolby Vision target (**#193**), every
+  Dolby/DV project with a suitability verdict, the 254-of-304 entries captured, and the
+  read-only procedure to re-read the list over adb
 - App code: `app/src/main/java/com/dvstrip/player/` (10 files, each single-purpose)
 - Tests + fixtures: `app/src/test/`
