@@ -356,52 +356,85 @@ the partitions it writes are mounted **rw**. This is a **vendor-sanctioned path 
 neither root nor an unlocked bootloader** — which is exactly why the earlier "no on-device
 workaround exists" conclusion was wrong. The locked bootloader never blocked this route.
 
-#### What the factory app actually does — read from its own bytecode
+#### What the factory app actually does — decompiled (jadx), not guessed
 
-Both APKs are world-readable under `/system/app`, so they can be pulled and their DEX string
-tables parsed without root (method in §15). That yields three concrete facts.
+Both APKs are world-readable under `/system/app` and can be pulled without root (§15).
+Decompiling `TopTvFactory.apk` settles what the factory screens mean.
 
-**1. "DV MD5" is the Dolby Vision picture-mode calibration table.** The app tracks four
-checksums, and they name themselves:
+**1. "DV MD5" is a checksum of a file named by the project INI.** From
+`com/toptech/tvfactory/picture/PicturePageLogic.java`:
 
-```
-picture_mode_pq_md5        picture_mode_pq_hdr_md5
-picture_mode_pq_osd_md5    picture_mode_dv_md5      <-- the one reported absent
-```
-
-with helpers `getFileMd5`, `md5DV`, `md5PQ`, `md5PQHDR`, `md5PQOSD`, `isSupportDolbyHDR`,
-`getDolbyHdrPicMode`, `HDR_TYPE_DOLBY`. So **DV MD5 is the checksum of a file holding the DV
-picture-mode tuning table**, sitting beside the SDR, HDR and OSD picture tables — precisely the
-per-panel Dolby display-management calibration. "DV MD5 absent" means *that table is not
-present in the currently selected project's model config*, which fits the `4k_2` → `_4k_3`
-downgrade exactly.
-
-**2. The project list is served live by a running vendor HIDL service**, not hardcoded:
-
-```
-vendor.realtek.rtkconfigs@1.0::IRtkProjectConfigs/default   (registered, running)
+```java
+RtkProjectConfigs cfg = RtkProjectConfigs.getInstance();
+String config  = cfg.getConfig("[MISC_PQ_MAP_CFG]", "PQ");
+String config2 = cfg.getConfig("[MISC_PQ_MAP_CFG]", "PQ_HDR");
+String config3 = cfg.getConfig("[MISC_PQ_MAP_CFG]", "PQ_OSD");
+String config4 = cfg.getConfig("[MISC_PQ_MAP_CFG]", "DV");     // <-- "DV MD5"
+md5DV.setSumary(byteToString(sb, getMd5(messageDigest, config4)));
 ```
 
-The app calls `getProjectIdNum`, `getProjectIdName`, `getCurrentProjectId`, `getProjectIdSelect`;
-`FactoryTools-GTV` carries a `ProjectIDActivity` with `ProjectIdListLength:` and
-`Failed to set ProjectID`. **The factory app will therefore display real project names on
-screen** — the authoritative list cannot be read from shell, because
-`/mnt/vendor/tvconfigs/model/` and `/mnt/vendor/impdata/tvconfigs/model` are both denied.
+and `getMd5` does `new File(str)` — the INI **value is an absolute path** — returning `null`
+unless the file both `exists()` and `canRead()`. `byteToString(null)` renders the literal
+string **`"File not exist or can not read."`**
 
-**3. The wipe is real and intentional:** the strings include `clear data and reboot`,
-`NEED_REBOOT`, `UPDATED_NEED_REBOOT`, `RestoreBootparam000`.
+So **"DV MD5 absent" means precisely: the currently selected project's INI either has no `DV`
+key under `[MISC_PQ_MAP_CFG]`, or names a Dolby Vision picture-table file that is not on the
+device.** It is a read-only factory QC readout — **not a switch**, and not itself the DV enable.
+
+**2. A "project" is literally an INI file.** `getProjectIniList()` returns INI filenames,
+numbered 1..`getProjectMaxIdx()`, with the active one flagged `select`. Every call routes
+through `com.realtek.system.RtkProjectConfigs` to the running HIDL service
+`vendor.realtek.rtkconfigs@1.0::IRtkProjectConfigs/default` — the app is a thin UI over it.
+**The on-screen list will therefore show real INI names**, which normally encode model and
+panel. That list cannot be read from shell (`/mnt/vendor/tvconfigs/model/` is denied), so it is
+the one piece of information only the TV can give you.
+
+**3. What a project change actually rewrites**, from `applyPidConfig()`:
+
+```java
+pidChgConfig.applyPanelSetting            = true;   // <-- the risk, in one line
+pidChgConfig.applyIRSetting               = true;
+pidChgConfig.applyBootAnimationSetting    = true;
+pidChgConfig.applyBootlogoSetting         = true;
+pidChgConfig.applyAmpSetting              = true;
+pidChgConfig.applyTunerSelectSetting      = true;
+pidChgConfig.applyPcbSetting              = true;
+pidChgConfig.applyPanelEyeDiagramSetting  = true;
+pidChgConfig.applyDynamicTconlessSetting  = true;
+```
+
+then it copies/deletes `vby1_eyediagram.bin` according to `[PANEL] EYE_DIAGRAM_BIN`, and
+broadcasts `android.intent.action.FACTORY_RESET` with the reason set to
+`RtkProjectConfigs.getOemImageName()` — the wipe, confirmed in code.
+
+Note what is **absent** from that list: no PQ or DV item. The picture tables are not "applied"
+by the factory app; they are read from the INI at boot by the PQ subsystem.
+
+**4. The app reads only six INI keys in total** — `[MISC_PQ_MAP_CFG]` → `PQ`, `PQ_HDR`,
+`PQ_OSD`, `DV`; `[PANEL]` → `EYE_DIAGRAM_BIN`, `m_pPanelName`. It **never reads or sets any
+codec-variant key.** The link between the project and `ro.boot.variant.codecs` therefore lives
+in the bootloader or `mediainit`, not here — which is why §11.2's causal claim remains a
+hypothesis rather than a proven chain.
 
 #### The consequence for strategy
 
-The app **reports** the MD5 (`getFileMd5`, `initMD5`); nothing in it suggests it can author or
-import a DV table. So the lever is **not** "provision DV data" — it is "select a project whose
-model config already ships one."
+The app only *reports* the checksum; it cannot author or import a DV table. So the lever is
+**not** "provision DV data" — it is "select a project whose INI ships one". Usefully, that makes
+**DV MD5 a direct per-project readout of DV provisioning**: switch, look, decide.
 
-And because that table is *panel-specific calibration*, a project built for a different panel
-carries tuning for that panel's peak luminance and primaries. **Working DV with wrong colour is
-a genuine third outcome**, distinct from both today's washed-out state and a clean success. If
-the list exposes model names or sizes, prefer the closest sibling to this set — roughly 55-inch
-(§7), 500-nit, same panel family — over an arbitrary DV-bearing entry.
+One refinement the decompile suggests. The bootloader *already* declares the Dolby tier
+(`4k_2`) while the DV picture table is missing. That points at a unit which is DV-provisioned at
+the codec level but whose DV **picture data** was never flashed — in which case the minimal
+repair would be restoring that one file rather than changing project at all. It is not
+actionable from here: the INI, its `DV` path, and the file itself are all inside
+`/mnt/vendor/tvconfigs`, which shell cannot read.
+
+Because the table is *panel-specific calibration*, a project built for a different panel carries
+tuning for that panel's peak luminance and primaries. **Working DV with wrong colour is a
+genuine third outcome**, distinct from both today's washed-out state and a clean success. If the
+list exposes model names or sizes, prefer the closest sibling to this set — roughly 55-inch
+(§7), 500-nit, same panel family. `[PANEL] m_pPanelName` is readable by the app, so the factory
+UI may be able to show you the panel name for comparison.
 
 **Objective test after any project change — two commands, no guesswork:**
 
@@ -428,14 +461,21 @@ nothing is lost and the app still covers the gap.
 
 #### Next step when picking this up again
 
-Not more static analysis — **the project list itself**, which is only visible on the TV. Open
-the factory app's Project ID screen and record the entries plus the current selection. If the
-names identify models or panels, that is enough to choose a safe candidate *and* gives a
-known-good value to return to.
+Static analysis is done — the app has been decompiled and it holds nothing further. `ProjectIdLogic`
+turned out to be an empty stub (all the work is in `ProjectIdFragment`), and nothing in the app
+filters or flags DV-capable projects, so candidate selection cannot be reduced to a lookup.
 
-Going further into the code would need a real decompiler (`jadx`); the DEX string table shows
-constants, never logic. The question worth that effort is whether `ProjectIdLogic` filters or
-flags DV-capable projects, which would turn candidate selection from guesswork into a lookup.
+What remains is **the project INI list, visible only on the TV**. Open the factory app's Project
+ID screen and record every entry plus the current selection. Then the loop is:
+
+1. Note the current Project ID. **This is the only way back.**
+2. Switch to a candidate whose INI name suggests the same panel; accept the wipe and reboot.
+3. Check **DV MD5** in the picture page — data instead of `File not exist or can not read.`
+   means that project ships a DV picture table.
+4. Run the two commands above. `_4k_2` means the decoders registered; a **`1`** in
+   `mSupportedHdrTypes` means DV actually reaches the panel.
+5. Judge the picture. Right colours = done. Wrong colours = that project's calibration is for a
+   different panel; go back.
 
 ### 11.4 What holds regardless of the above
 
@@ -625,6 +665,17 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 
 Then: `grep -iE "md5|dolby|projectid|picture_mode" strings.txt | sort -u`
 
+For the logic rather than the constants, decompile with jadx (~1 min for this APK):
+
+```sh
+jadx -d out_factory --no-debug-info -q TopTvFactory.apk
+# the three files that matter:
+#   com/toptech/tvfactory/picture/PicturePageLogic.java   <- the four PQ/DV MD5s
+#   com/toptech/tvfactory/user/ProjectIdFragment.java     <- project list, apply, factory reset
+#   com/toptech/tvfactory/api/impl/UserApi.java           <- thin wrapper over RtkProjectConfigs
+grep -rhoE 'getConfig\("\[[A-Z_0-9]+\]", *"?[A-Za-z_0-9.]*"?' out_factory/sources | sort -u
+```
+
 ## 16. Cross-confirmation ledger
 
 Every load-bearing claim and the independent sources that agree on it.
@@ -644,7 +695,9 @@ Every load-bearing claim and the independent sources that agree on it.
 | DV driver live in kernel | `/sys/class/dolbyvisionEDR/dolbyvisionEDR0/` present, created at boot, has a `dev` attribute |
 | **The SoC itself decodes DV at 4K60** | five `*rtd6748*` performance profiles declare `performance-point-3840x2160 = 60-60` for `video/dolby-vision` (measured capability, CTS-validated class of file); the profile this SKU selects declares none; DV decoder components exist in the `_4k_1/_4k_2/_4k_4/_4k_5/_4k_6/_4k_14` codec variants |
 | **The declared project tier is the Dolby tier, and was downgraded at runtime** | `ro.boot.variant.codecs=4k_2` (bootloader) vs `ro.media.xml_variant.codecs=_4k_3` (in force); `media_codecs_4k_3.xml` include list is `media_codecs_4k_2.xml`'s minus `…_dolby_vision_4k.xml` and `…_audio_dolby.xml`; `mediainit.rc` shows the value is set at runtime, not built in |
-| **"DV MD5" = the DV picture-mode calibration table** | `picture_mode_dv_md5` alongside `picture_mode_pq_md5` / `_pq_hdr_md5` / `_pq_osd_md5` in the factory app's DEX string table, with `getFileMd5`, `md5DV`, `isSupportDolbyHDR`, `getDolbyHdrPicMode` |
+| **"DV MD5" = MD5 of the file at INI key `[MISC_PQ_MAP_CFG] DV`** | decompiled `PicturePageLogic.initMD5()` reads that key and MD5s it via `getMd5()`, which does `new File(str)` and returns null unless `exists() && canRead()`; `byteToString(null)` prints `"File not exist or can not read."`. Siblings `PQ`, `PQ_HDR`, `PQ_OSD` in the same section |
+| A project **is** an INI; the app is a thin UI over a vendor service | `getProjectIniList()` / `getProjectMaxIdx()` / `setProjectId()` all delegate to `RtkProjectConfigs` → `vendor.realtek.rtkconfigs@1.0::IRtkProjectConfigs/default` (registered, running per `lshal`) |
+| A project change reconfigures the **panel** and wipes data | decompiled `applyPidConfig()` sets `applyPanelSetting`/`applyPcbSetting`/`applyTunerSelectSetting`/… then broadcasts `android.intent.action.FACTORY_RESET` |
 | Project ID is served at runtime, list not in the APK | `lshal` shows `vendor.realtek.rtkconfigs@1.0::IRtkProjectConfigs/default` registered and running; app calls `getProjectIdNum` / `getProjectIdName` / `getCurrentProjectId`; `FactoryTools-GTV` has `ProjectIDActivity`, `ProjectIdListLength:` |
 | Bootloader locked / verity on | `ro.boot.flash.locked=1`; `ro.boot.verifiedbootstate=green`; `ro.boot.veritymode=enforcing`; all system mounts are `dm-*` |
 | Widevine present | vendor APEX `com.google.android.widevine.nonupdatable.apex`; registered AIDL `IDrmFactory/widevine` |

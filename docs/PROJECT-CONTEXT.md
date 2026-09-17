@@ -109,12 +109,19 @@ the bootloader says this unit should be on the **Dolby** tier:
 `media_codecs_realtek_audio_dolby.xml`. Everything else is identical. So this is a Dolby-tier
 unit that got downgraded at boot by `/vendor/bin/mediainit` (see `/vendor/etc/init/mediainit.rc`).
 The likely trigger — **hypothesis, not proven** — is that the factory app reports **DV MD5
-absent**, so media init fails safe. Reading the factory APK's DEX string table (it is
-world-readable at `/system/app/TopTvFactory/`) pins down what that means: the app tracks
-`picture_mode_dv_md5` beside `picture_mode_pq_md5`, `picture_mode_pq_hdr_md5` and
-`picture_mode_pq_osd_md5`. **"DV MD5" is the checksum of the Dolby Vision picture-mode
-calibration table** — the per-panel display-management tuning — and it is missing for the
-currently selected project.
+absent**, so media init fails safe. Decompiling the factory APK (world-readable at
+`/system/app/TopTvFactory/`) pins that down exactly. `PicturePageLogic.initMD5()` does:
+
+```java
+String config4 = RtkProjectConfigs.getInstance().getConfig("[MISC_PQ_MAP_CFG]", "DV");
+md5DV.setSumary(byteToString(sb, getMd5(messageDigest, config4)));   // getMd5 -> new File(str)
+```
+
+**A "project" is an INI file, and "DV MD5" is just the MD5 of whatever absolute path that INI's
+`[MISC_PQ_MAP_CFG] → DV` key names** (siblings: `PQ`, `PQ_HDR`, `PQ_OSD`). "Absent" is the app
+literally printing `File not exist or can not read.` — so this project either has no `DV` key or
+points at a Dolby Vision picture-table file that isn't on the device. It is a read-only QC
+readout, **not** the DV enable switch: the app never reads or sets any codec-variant key.
 
 The factory app **`com.toptech.tvfactory`** exposes **Project ID** selection, which drives that
 provisioning and writes partitions mounted rw (`/mnt/vendor/factory`, `/mnt/vendor/impdata`).
