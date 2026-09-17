@@ -1,26 +1,94 @@
 # DV Strip Player — Full Project Context
 
-*Written 2026-09-13, at the end of the initial development session. Read this first when
-returning to the project — it captures everything that is not obvious from the code,
-especially the failed approaches (so you don't retry them) and the verified facts (so you
-don't re-derive them).*
+*Written 2026-09-13, at the end of the initial development session; hardware root cause added
+2026-09-17. Read this first when returning to the project — it captures everything that is not
+obvious from the code, especially the failed approaches (so you don't retry them) and the
+verified facts (so you don't re-derive them).*
 
 ## Purpose and the user's environment
 
-The user's Android TV **does not support Dolby Vision**. Worse, its SoC decoder
+The target TV **does not support Dolby Vision** as an output format, yet its video firmware
 **auto-engages the DV pipeline purely from in-band RPU NAL units** (HEVC NAL type 62) in the
 bitstream — regardless of container signaling, player choice, or player settings ("Disable
-Dolby Vision" toggles do nothing). Result: DV content plays with washed-out colors.
+Dolby Vision" toggles do nothing). Result: DV content plays with washed-out colors. The exact
+mechanism is pinned down in the next section.
 
 This app registers as a system video player, intercepts media, removes/neutralizes DV, and
 forwards to a real player.
 
+- **The device:** Vu VIBE TV — `model:Vu_VIBE_TV`, `product:KKRTK2885GTV_VU_L`, `device:bandra`.
+  A Vu-branded SKU of a **KONKA** ODM board (`ro.odm.build.fingerprint`). Android 14 build
+  `UKRC.260302.018`, kernel 5.4.242, `user` build, **not rooted** (`ro.debuggable=0`, no `su`,
+  SELinux enforcing). Reach it over adb on port 5555 — `adb connect <tv-ip>:5555`. **The TV's IP
+  changes**, so read it off the TV's network settings each time rather than hardcoding it.
+- **The SoC — two identifiers, one chip. Don't repeat this mistake:**
+  `ro.soc.model` = **`RTD2885N`** (Realtek; quad-core 2×Cortex-A75 + 2×Cortex-A55, PowerVR GPU).
+  That is the real, marketed part number and it is what `ro.soc.model` exists to tell you
+  (Android 12+ mandates the field). But `ro.board.platform`, `ro.hardware` and `ro.boot.hardware`
+  all say **`rtd6748`** — Realtek's internal platform/BSP designation for the same silicon, set
+  by the bootloader and used to key every vendor HAL and config file in `/vendor`. Both names
+  appear in the image because the BSP tracks some variants by marketed name (`rtd2885m`,
+  `rtd2885p`) and this one by platform number.
+  **Use `RTD2885N` when searching for specs or other people's reports; use `rtd6748` when
+  looking up files under `/vendor`.** Independent corroboration of the part: the Netflix
+  certification string `ro.vendor.nrdp.modelgroup` = `REFPLUSOCA4KRTD2885NGTV`. The product
+  string decodes as KONKA + RTK2885 + Google TV + Vu SKU and was accurate about the chip all
+  along — `ro.board.platform` is *not* an SoC part number, so don't read it as one.
 - **User's player:** Vimu (also tested Nova, VLC; Kodi handles DV internally on its own).
 - **Typical source:** Stremio → torrentio/torbox debrid → direct HTTPS MKV URLs, 20+ GB 4K remuxes.
 - **Verified:** plain HDR10 (non-DV) files trigger HDR correctly in every player on this TV,
   so DV data was always the sole culprit.
 - The TV does not always show its HDR badge for app-internal playback even when the panel is
   in HDR mode — check picture-mode names or `adb shell dumpsys display | grep -iE "hdr|colorMode"`.
+
+## Root cause: how this TV is configured (verified on-device 2026-09-17)
+
+**Dolby Vision is disabled at the two layers apps and the framework can see, and left running
+in the layer underneath.** That single fact explains every symptom in this project.
+
+| Layer | State | Evidence |
+|---|---|---|
+| Display / panel | HDR10 + HLG only, **no DV** | `dumpsys display` → `hdrCapabilities HdrCapabilities{mSupportedHdrTypes=[2, 3], mMaxLuminance=500.0}`. In `Display.HdrCapabilities`, 1=DOLBY_VISION, 2=HDR10, 3=HLG, 4=HDR10_PLUS — type 1 absent. Also `supportedColorModes=[0]`, `mHdrConversionMode=HDR_CONVERSION_SYSTEM`. |
+| Android codec list | **no** `video/dolby-vision` codec registered; zero Dolby system properties | `ro.media.xml_variant.codecs=_4k_3`, so `media_codecs_4k_3.xml` is the loaded root; neither it nor `media_codecs_realtek_video_4k.xml` contains a `dolby-vision` entry. |
+| Kernel / VPU firmware | **DV/EDR driver loaded and live** | `/sys/class/dolbyvisionEDR/dolbyvisionEDR0/` registered at boot. Character-device class node (has `dev`), SELinux-denied to shell, **no tunable attributes**. |
+
+The BSP itself is fully DV-capable: `/vendor/etc/` ships `dvhe.st`, `dvhe.stn`, `dvhe.dtr`,
+`dvav.se` and `dav1.10` as `video/dolby-vision` decoders (OMX **and** Codec2, secure and
+non-secure) inside the `_4k_1 / _4k_2 / _4k_4 / _4k_5 / _4k_6 / _4k_14` variant files. Same
+vendor image as DV-capable Vu models — DV is simply configured out for this SKU.
+
+**Why hybrids (P8.1) don't fall back.** The fallback contract lives in the container:
+`dv_bl_signal_compatibility_id = 1` in the DV configuration record means "the base layer is
+standalone HDR10; if you can't do DV, ignore the RPU". That field is read at the
+codec-selection layer — exactly where DV was removed. The still-live firmware layer triggers on
+raw NAL 62 instead and **never consults it**. The device isn't attempting the fallback and
+failing; it makes the DV decision somewhere the fallback signal doesn't reach. This is why
+approach 3 below (all container signaling removed) *still* rendered washed out, and why
+player-level "disable DV" toggles are inert.
+
+**No on-device workaround exists.** Unrooted `user` build, SELinux enforcing, and Realtek
+exposes DV as a chardev to the media HAL — there is **no** Amlogic-style `dolby_vision_policy` /
+`dolby_vision_enable` sysfs knob to flip (don't go looking for `/sys/class/amdolby_vision/`;
+wrong vendor). Rewriting the bytes above the decoder is the only intervention point, which is
+what this app does. A vendor firmware fix is unlikely — this is a deliberate per-SKU config.
+
+This also corroborates limitation 0: the panel exposes only HDR10/HLG and the framework picks
+the HDR mode at codec-configure time, hence "badge only after a seek/crop" unless the container
+itself carries `Colour`.
+
+Re-derivation (run `grep` **on the device** — quote the whole remote command; PowerShell has no
+`grep` and strips inner double quotes, so prefer the Bash tool with `MSYS_NO_PATHCONV=1` when
+`/sys` paths are involved, or Windows will mangle them):
+
+```sh
+adb shell 'getprop ro.soc.manufacturer; getprop ro.soc.model'   # the real part: Realtek RTD2885N
+adb shell 'getprop ro.board.platform; getprop ro.hardware'      # the BSP name: rtd6748
+adb shell 'getprop | grep -i dolby'                             # expect: nothing
+adb shell 'getprop ro.media.xml_variant.codecs'
+adb shell 'grep -il dolby-vision /vendor/etc/media_codecs*.xml'
+adb shell 'ls /sys/class/ | grep -i dolby'
+adb shell 'dumpsys display | grep -iE "hdrCapabilities|supportedHdrTypes"'
+```
 
 ## Dolby Vision facts that drove the design (all verified)
 
@@ -54,9 +122,11 @@ forwards to a real player.
    m3u8/DASH inputs.
 3. **Byte-identical pass-through proxy with container-signaling patches only**: perfect
    streaming UX (native Range seeking, real duration, zero CPU/storage), but **colors stayed
-   washed out** — this TV engages DV from the in-band RPUs alone. Container patching is
-   necessary (for player-level detection, e.g. ExoPlayer selecting video/dolby-vision
-   MediaCodec) but not sufficient on this hardware.
+   washed out** — this TV engages DV from the in-band RPUs alone (mechanism: root-cause
+   section above). Container patching is necessary (for player-level detection, e.g. ExoPlayer
+   selecting video/dolby-vision MediaCodec) but not sufficient on this hardware. This is also
+   the controlled experiment that isolates the trigger: container signaling fully removed and
+   still washed out, vs. (2)/(4) where only the in-band NAL 62 bytes changed and HDR was correct.
 4. **Final architecture** = (3) + **in-flight RPU NAL rewriting** (`MkvRpuTransformer`):
    every RPU NAL in the video track is rewritten in place into a same-size filler NAL
    (type 38: header `0x4C 0x01`, `0xFF` padding, `0x80` rbsp-stop). Byte lengths never
@@ -125,9 +195,10 @@ blocks, mid-cluster range starts) degrades to pass-through rather than corruptin
 
 ## Known limitations / future work (ordered by likely impact)
 
-0. **HDR badge only after seek/crop (fixed 2026-09-14):** some TVs set display HDR mode at
+0. **HDR badge only after seek/crop (fixed 2026-09-14):** this TV sets display HDR mode at
    playback start from the container's MKV `Colour` element (0x55B0 under Video), and only
-   fall back to the bitstream VUI on a codec reconfigure (seek/crop). DV remuxes often omit
+   falls back to the bitstream VUI on a codec reconfigure (seek/crop) — see the root-cause
+   section: the framework picks the HDR mode at codec-configure time. DV remuxes often omit
    `Colour`. `MkvDvPatcher.buildColourInjectionPatch` synthesizes an HDR10 `Colour`
    (Matrix=9/Transfer=16/Primaries=9/Range=1) in place by donating the removed DV
    BlockAdditionMapping's bytes + a Void — SAME LENGTH, so offsets/Cues/seeking are untouched.
