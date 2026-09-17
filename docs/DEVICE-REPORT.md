@@ -505,11 +505,10 @@ Konka clearly ships **paired projects** — the same hardware with and without D
 131 vs 55, 193 vs 179). That pairing is itself evidence that the difference between them is
 Dolby provisioning rather than hardware.
 
-**The captured list lives in `PROJECT-IDS.md`** — 254 of the 304 entries, with #179 and #193
+**The full list lives in `PROJECT-IDS.md`** — all 304 entries, no gaps, with #179 and #193
 flagged inline, every Dolby/DV project scored for suitability, and the read-only procedure to
-re-read or extend it. Gaps (`204–206`, `224–226`, `244–266`, `284–304`) are recorded there as
-unknown rather than absent; none can change the conclusion, since #193 is already an exact
-match.
+re-read it. The complete list was searched for `dolby` / `_dv`: there are exactly **10** such
+projects and **#193 is the only one matching this panel**.
 
 #### Next step when picking this up again
 

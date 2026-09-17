@@ -342,8 +342,8 @@ blocks, mid-cluster range starts) degrades to pass-through rather than corruptin
   display, full codec tables, audio, DRM, boot security, plus a cross-confirmation ledger and
   the commands to regenerate it)
 - **Factory Project ID list: `docs/PROJECT-IDS.md`** — which project is the default
-  (**#179**, the one to return to), which is the Dolby Vision target (**#193**), every
-  Dolby/DV project with a suitability verdict, the 254-of-304 entries captured, and the
-  read-only procedure to re-read the list over adb
+  (**#179**, the one to return to), which is the Dolby Vision target (**#193**), all 10
+  Dolby/DV projects with a suitability verdict each, the complete 304-entry list, and the
+  read-only procedure to re-read it over adb
 - App code: `app/src/main/java/com/dvstrip/player/` (10 files, each single-purpose)
 - Tests + fixtures: `app/src/test/`

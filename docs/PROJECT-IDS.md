@@ -1,8 +1,8 @@
 # Factory Project ID list — Vu VIBE TV (Realtek RTD2885N / `rtd6748`)
 
 *Captured 2026-09-17 from the live TV over adb, read-only (arrow keys + `uiautomator dump`).
-**No project was selected**; `ro.boot.variant.codecs` / `ro.media.xml_variant.codecs` were
-re-checked afterwards and were unchanged.*
+**Complete: all 304 entries.** **No project was selected**; `ro.boot.variant.codecs` /
+`ro.media.xml_variant.codecs` were re-checked afterwards and were unchanged at `4k_2` / `_4k_3`.*
 
 A "Project ID" selects an **`.ini`** file that defines panel timings, backlight driver, IR map,
 amp, tuner region, boot logo — and the picture-quality tables, including the **Dolby Vision**
@@ -26,7 +26,7 @@ every other Dolby project below does.
 > path, not a preference, and there is no way to skip it. The owner has ruled this out, so
 > this file is a record, not a plan.
 
-## Every Dolby / DV project in the list
+## Every Dolby / DV project — all 10, across the complete list
 
 | # | INI | Suitable here? |
 |---|---|---|
@@ -41,11 +41,12 @@ every other Dolby project below does.
 | **193** | `IN_VU_UG55AK680N_PWM47K_HV550QUB_F70_V20_XMX_60HZ_LCD_12V_6R10W_DV.ini` | ✅ **exact twin of 179** |
 | 200 | `US_RCA_UDL75TR809UN_HV750QUB_E95_MINI_LED_AD82088_24V_6R10W_144HZ_DV.ini` | ✗ 75″ mini-LED |
 
-Konka ships **paired** projects — the same hardware with and without Dolby (114↔77, 131↔55,
-193↔179). That pairing is itself evidence the delta within a pair is Dolby provisioning, not
-hardware.
+**This is the exhaustive set** — the full 304 were searched for `dolby` / `_dv`, and #193 is the
+only candidate matching this panel. Konka ships **paired** projects (114↔77, 131↔55, 193↔179):
+the same hardware with and without Dolby. That pairing is itself evidence the delta within a
+pair is Dolby provisioning, not hardware.
 
-## All Vu-branded (`IN_VU_*`) projects
+## Vu-branded projects
 
     35 IN_VU_UDL65TR812AN_LE650PQL_HPAB_24V_6R12W.ini
     133 IN_VU_UG65SR680N_PWM300_HV650QUB_F70_60HZ_LCD_12V_6R10W.ini
@@ -59,21 +60,10 @@ hardware.
     214 IN_VU_UG50AK680N_PWM47K_HF500QUB_F20_WDX_60HZ_LCD_12V_6R10W.ini
     221 IN_VU_55VIBE24_PWM47K_HF550QUB_F21_WDX_60HZ_LCD_12V_8R8W.ini
     222 IN_VU_65VIBE24_PWM300_PT650GT02_6_WDX_60HZ_LCD_12V_8R8W.ini
+    244 KR_KONKA_VU_UG43AK680UN_PWM47K_HV430QUB_F70_60HZ_LCD_12V_6R10W.ini
+    245 KR_KONKA_VU_UG50AK680UN_PWM47K_CV500U5_T02_V04_XMX_60HZ_LCD_12V_6R10W.ini
 
-## Completeness
-
-The list holds **304 projects** (navigation wraps at 304). **254 are recorded below.** The
-following 50 were not captured before the TV went off the network, and are simply unknown —
-not "confirmed absent":
-
-`204–206` · `224–226` · `244–266` · `284–304`
-
-None of them can change the conclusion: #193 is already an exact match, so nothing in the gaps
-could be a better candidate. To fill them in, follow "Re-reading the list" below and land the
-selection on 206, 226, 250, 266, 300 and 304 — each dump shows the 17 rows ending at the
-selected one.
-
-## Full list (as captured)
+## Full list — all 304 projects
 
 ```
    1  EU_Bandra_OLED_AD82088_Netflix.ini
@@ -279,6 +269,9 @@ selected one.
  201  TW_PROTON_PGQ_U65KN6_Bandra_PWM200_HV650QUB_E75_V20_AD82088_12V_8R8W.ini
  202  EU_TOPTECH_LCD_PWM300_HF850QUB_E21_LCD_AD82088_24V_6R10W_RTD2885V63.ini
  203  MX_TOPTECH_LCD_PWM300_HF850QUB_E21_LCD_AD82088_24V_6R10W_RTD2885V63.ini
+ 204  LA_TOPTECH_LCD_PWM300_HF850QUB_E21_LCD_AD82088_24V_6R10W_RTD2885V63.ini
+ 205  EU_TOPTECH_OLED_LE550PQL_HSA2_AD82088_24V_6R10W_RTD2885V63.ini
+ 206  MX_TOPTECH_OLED_LE550PQL_HSA2_AD82088_24V_6R10W_RTD2885V63.ini
  207  LA_TOPTECH_OLED_LE550PQL_HSA2_AD82088_24V_6R10W_RTD2885V63.ini
  208  KZ_KONKA_KT75_Q809GB_HV750QUB_E95_MINI_LED_AD82088_24V_6R10W_144HZ.ini
  209  KZ_KONKA_KT65_Q809GB_HV650QUB_E75_V20_MINI_LED_AD82088_24V_6R10W_144HZ.ini
@@ -296,6 +289,9 @@ selected one.
  221  IN_VU_55VIBE24_PWM47K_HF550QUB_F21_WDX_60HZ_LCD_12V_8R8W.ini
  222  IN_VU_65VIBE24_PWM300_PT650GT02_6_WDX_60HZ_LCD_12V_8R8W.ini
  223  VN_KONKA_K080_Bandra_PWM300_HV750QUB_E95_LCD_AD82088_12V_8R8W.ini
+ 224  US_Bandra_KONKA_PWM300_DV430QUB_P10_LD_H48V24_RTD2885V90_AD82088_12V_6R10W.ini
+ 225  IN_A099_SYLVOX_55_PWM47K_HV550QUB_F70_60HZ_LCD_12V_6R10W_P150_2885V90.ini
+ 226  US_J159_Bandra_PWM300_SG5461D11_2_60HZ_LCD_AD82088_24V_6R12W_RTD2885V96.ini
  227  EU_K097_SYLVOX_OT65A3KOHJ_ST6451D07_3_LCD_ld_H48V24_AD82088_24V_6R10W_RTD2885V98.ini
  228  EU_K097_SYLVOX_OT65A6KOEC_ST6451D07_3_LCD_18V_6R10W_RTD2885V98.ini
  229  EU_K097_SYLVOX_OT43A3KOHJ_HV430QUB_H10_LCD_ld_H48V24_AD82088_24V_6R10W_RTD2885V98.ini
@@ -313,6 +309,29 @@ selected one.
  241  US_K097_SYLVOX_OT43A3KHHJ_HV430QUB_H10_LCD_ld_H48V24_AD82088_24V_6R10W_RTD2885V98_Blue_ray.ini
  242  US_K097_SYLVOX_OT65A3KHHJ_ST6451D07_3_LCD_ld_H48V24_AD82088_24V_6R10W_RTD2885V98_Blue_ray.ini
  243  AU_KONKA_UDL55TR780AN_HV550QUB_E10_XMX_QLED_AD82088_SingleAMP_12V_8R10W_144HZ.ini
+ 244  KR_KONKA_VU_UG43AK680UN_PWM47K_HV430QUB_F70_60HZ_LCD_12V_6R10W.ini
+ 245  KR_KONKA_VU_UG50AK680UN_PWM47K_CV500U5_T02_V04_XMX_60HZ_LCD_12V_6R10W.ini
+ 246  AU_KONKA_UDL65TR780AN_HV650QUB_E77_V20_XMX_QLED_AD82088_SingleAMP_12V_8R10W_144HZ.ini
+ 247  US_RCA_UDL55TR780AN_HV550QUB_E10_XMX_MINI_LED_AD82088_SingleAMP_12V_6R10W_144HZ.ini
+ 248  EU_W065_SYLVOX__HV750QUB_E97_V20_QLED_AD82088_SingleAMP_12V_8R10W_RTD2885V90_144HZ.ini
+ 249  EG_M085_YJ132_PWM300_HV550QUB_E10_144HZ_LCD_AD82088_18P8V_8R10W_RTD2885V91.ini
+ 250  LK_KONKA_UDL75TR809ANTS_HV750QUB_E92_V20_MINI_LED_AD82088_24V_6R10W_144HZ.ini
+ 251  LK_KONKA_UDL85TR809ANT_PWM47K_HF850QUB_E21_MINI_LED_AD82088_24V_6R10W_144HZ.ini
+ 252  US_K097_SYLVOX_PWM300_HV550QUB_E10_LCD_ld_H24V16_AD82088_24V_6R10W_RTD2885V98.ini
+ 253  US_K097_SYLVOX_PWM300_HV750QUB_E97_LCD_ld_H40V20_AD82088_24V_6R10W_RTD2885V98.ini
+ 254  US_K097_SYLVOX_PWM300_LC550EQY_SKA_LCD_60HZ_AD82088_18V_6R10W_RTD2885V98.ini
+ 255  US_RCA_UDG65TR780UN_HV650QUB_E75_V20_XMX_QD_MINI_LED_AD82088_24V_6R10W_144HZ.ini
+ 256  US_RCA_UDL75TR780UN_HV750QUB_E95_XMX_QD_MINI_LED_AD82088_24V_6R10W_144HZ_SingleAMP.ini
+ 257  TR_KONKA_UDL55TR812N_LE550PQL_HPAH_24V_6R12W.ini
+ 258  ZA_D084_LH50_PWM47K_ST4951D01_1_60HZ_LCD_12V_6R10W_SI2151_WA6819_P150_2885V90.ini
+ 259  KR_INNOS_UDG43AK680UN_PWM47K_HV430QUB_F70_AD82088_12V_8R10W.ini
+ 260  US_RCA_UDG65TR780UN_HV650QUB_E75_V20_XMX_QD_MINI_LED_AD82088_SingleAMP_24V_6R10W_144HZ.ini
+ 261  US_RCA_UDL75TR780UN_HV750QUB_E95_XMX_QD_MINI_LED_AD82088_SingleAMP_24V_6R10W_144HZ.ini
+ 262  EU_K097_SYLVOX_65_PWM300_ST6451D07_4_LCD_ld_H30V16_AD82088_24V_6R10W_RTD2885V98.ini
+ 263  EU_K097_SYLVOX_PWM300_HV550QUB_E10_LCD_ld_H24V16_AD82088_24V_6R10W_RTD2885V98.ini
+ 264  EU_K097_SYLVOX_PWM300_HV750QUB_E97_LCD_ld_H40V20_AD82088_24V_6R10W_RTD2885V98.ini
+ 265  TR_KONKA_K080_Bandra_PWM47K_DVA10QUB_N20_AD82088_12V_6R10W.ini
+ 266  AU_K069_KONKA_LE650PQL_HPAB_AD82088_19V_6R10W_RTD2885V91.ini
  267  KR_K069_PWM47K_HV430QUB_F70_WA6819_13P3V_6R10W_P150_2885V90.ini
  268  EU_K097_SYLVOX_PWM300_DVA10QUB_N10_MINI_LED_ld_H64V36_AD82088_24V_6R10W_RTD2885V98.ini
  269  EU_K097_SYLVOX_OT65A3KHHJ_PWM300_LC860DQL_LCD_ld_H64V30_AD82088_24V_6R10W_RTD2885V98.ini
@@ -330,6 +349,27 @@ selected one.
  281  DZ_M074_MXTV25_YJ311_Bandra_PWM300_HV750QUB_E95_LCD_RTD2885V90_SingleAMP_12V_8R8W.ini
  282  ZA_D084_SZP1791_PWM47K_PT550GT03_A_60HZ_LCD_12V_6R10W_SI2151_WA6819_P150_2885V90.ini
  283  ZA_F060_LT75NQ7165_PWM300_HV750QUB_E95_LCD_144HZ_AD82088_18P8V_8R10W_RTD2885V91.ini
+ 284  ZA_F060_LT85NQ7165_PWM300_ST846AD09_1_LCD_144HZ_AD82088_18P8V_8R10W_RTD2885V91.ini
+ 285  ZA_D084_SZP1790_PWM47K_PT500GT04_2_12V_6R10W_SI2151_WA6819_P150_2885V90.ini
+ 286  JP_X123_PWM47K_HV650QUB_F70_60HZ_12V_8R10W_WA6819_P150_2885V90.ini
+ 287  IL_KONKA_UDL65TR812ANTS_LE650PQL_HPAB_AD82088_OLED_19V_6R10W_RTD2885V91.ini
+ 288  US_Bandra_KONKA_PWM300_DV650QUB_P21_LD_H32V36_RTD2885V90_AD82088_12V_6R10W.ini
+ 289  AU_KONKA_UDL65TR780AN_PWM300_HV650QUB_F73_LD_H24V9_60HZ_RTD2885V63_12V_8R10W.ini
+ 290  LY_M074_MXTV25_0303Z102_Bandra_PWM300_HF850QUB_F21_LCD_RTD2885V90_SingleAMP_12V_6R8W.ini
+ 291  US_Bandra_KONKA_PWM300_DV650QUB_P21_LD_H32V36_RTD2885V90_AD82088_12V_6R10W_MS12X.ini
+ 292  ZA_F060_LT50NQ7165_PWM47K_V500DK4_Q01_LCD_144HZ_SingleAMP_18P8V_8R10W_P190_2885V81.ini
+ 293  ZA_F060_LT65NQ7165_PWM47K_ST6451D08_6_LCD_144HZ_SingleAMP_18P8V_8R10W_P190_2885V81.ini
+ 294  ZA_F060_LT75NQ7165_PWM300_ST7461D05_3_LCD_144HZ_AD82088_18P8V_8R10W_RTD2885V91.ini
+ 295  KR_KTX_UDG43AK680UN_PWM47K_HV430QUB_F70_60HZ_LCD_12V_6R10W.ini
+ 296  KR_KTX_UDG50AK680UN_PWM47K_CV500U5_T02_V04_XMX_60HZ_LCD_12V_6R10W.ini
+ 297  EU_K097_SYLVOX_PWM300_HV850QUB_E10_LCD_144HZ_ld_H64V30_AD82088_24V_6R10W_RTD2885V98.ini
+ 298  US_Bandra_KONKA_PWM300_DV750QUB_P21_LD_H32V36_RTD2885V90_AD82088_12V_6R10W_MS12X.ini
+ 299  US_K097_SYLVOX_OT65A3KHHJ_PWM300_LD650EGY_SSA1_ld_H48V24_AD82088_24V_6R10W_RTD2885V98_Blue_ray.ini
+ 300  US_K097_SYLVOX_OT65A3KHHJ_PWM300_T650QVN08_C_ld_H48V24_AD82088_24V_6R10W_RTD2885V98_Blue_ray.ini
+ 301  CN_KONKA_UDL55TR780ANTS_HV550QUB_E10_XMX_QLED_AD82088_SingleAMP_12V_8R10W_144HZ_HK.ini
+ 302  CN_KONKA_UDL55TR780AN_HV550QUB_E10_XMX_MINI_LED_AD82088_SingleAMP_12V_8R8W_144HZ_HK.ini
+ 303  US_K097_SYLVOX_OT65A3KHHJ_PWM300_HV850QUB_E10_ld_H64V30_AD82088_24V_6R10W_RTD2885V98.ini
+ 304  EU_K097_SYLVOX_OT65A3KHHJ_PWM300_HV850QUB_E10_ld_H64V30_AD82088_24V_6R10W_RTD2885V98.ini
 ```
 
 ## Re-reading the list
@@ -341,23 +381,24 @@ submit path wipes the TV.
 ```sh
 adb connect <tv-ip>:5555                       # the IP changes; read it from TV settings
 adb shell am start -n com.toptech.tvfactory/.FactoryMenuActivity
-adb shell input keyevent 20 20 20 20           # 4x DOWN  -> "Factory Setting"
-adb shell input keyevent 23                    # CENTER   -> enter it
-adb shell input keyevent 20 20 20 20 20 20 20 20 20   # 9x DOWN -> "Project ID"
-# verify SELECTED is exactly 'Project ID' BEFORE this next CENTER:
+# navigate to Factory Setting -> Project ID. Keyevents can be DROPPED right after launch,
+# so verify with a dump after each step instead of trusting a batch.
 adb exec-out uiautomator dump /dev/tty | python3 ui.py | head -2
+# only once SELECTED is exactly ['Project ID']:
 adb shell input keyevent 23                    # CENTER -> open the list (read-only)
 
-# now arrows only. batch them: 20 = DOWN, 19 = UP. the list wraps, so one UP from
-# row 1 jumps straight to row 304.
+# now arrows only. 20 = DOWN, 19 = UP. the list WRAPS, so one UP from row 1 lands on 304.
 adb shell input keyevent 19
 adb exec-out uiautomator dump /dev/tty | python3 ui.py
 
-adb shell input keyevent KEYCODE_BACK          # x3, then KEYCODE_HOME
+adb shell input keyevent 4                     # BACK x3, then 3 = HOME
 ```
 
-`ui.py` is listed in `DEVICE-REPORT.md` §15. Each dump shows 17 rows ending at the selected one,
-and the current project is the row followed by the word `select`.
+`ui.py` is listed in `DEVICE-REPORT.md` §15. Two behaviours worth knowing:
+
+- Each dump shows a **17-row window**, and it only scrolls when the selection leaves it — so to
+  read rows starting at *N*, land the selection exactly on *N* and the window becomes *N..N+16*.
+- The current project is the row followed by the word `select`.
 
 ## If a project is ever switched
 
