@@ -130,10 +130,24 @@ locked bootloader never blocked it. The project list is served at runtime by
 `vendor.realtek.rtkconfigs@1.0::IRtkProjectConfigs` (running), so it is visible in the app's UI
 but not readable from shell (`/mnt/vendor/tvconfigs/model/` is denied).
 
-Because the DV table is *panel-specific* calibration, a project built for another panel may
-enable DV with **wrong colour** — a third outcome distinct from both success and today's
-washed-out state. Full analysis, the APK method and the risk warnings are in
-`docs/DEVICE-REPORT.md` §11.2–11.3.
+**The list has been read (2026-09-17), and there is an exact match.** `FactoryMenuActivity` is
+`exported="true"`, so the menu can be launched over adb, driven with `input keyevent` and read
+with `uiautomator dump` — no root, arrows only, nothing selected. Of 304 projects:
+
+```
+179  IN_VU_UG55AK680N_PWM47K_HV550QUB_F70_V20_XMX_60HZ_LCD_12V_6R10W.ini      <- CURRENT
+193  IN_VU_UG55AK680N_PWM47K_HV550QUB_F70_V20_XMX_60HZ_LCD_12V_6R10W_DV.ini   <- same + _DV
+```
+
+**#193 is #179 character-for-character with `_DV` appended** — same model, same panel *and*
+revision (`HV550QUB_F70_V20`), same `PWM47K`, `XMX`, `60HZ`, `12V`, `6R10W`. So the usual
+wrong-panel-calibration risk does **not** apply to this candidate (it does to every other Dolby
+project in the list — the rest are OLED, or 65"/75", or a different panel revision).
+
+**The blocker is the wipe, and it is not optional.** `ProjectIdFragment` broadcasts
+`android.intent.action.FACTORY_RESET` immediately after `setProjectId()` — it is in the code
+path, not a preference. The owner has ruled that out, so this stays a documented lead rather
+than a plan. Full analysis in `docs/DEVICE-REPORT.md` §11.2–11.3.
 
 **Until that is proven to work, rewriting the bytes above the decoder remains the only
 intervention point, which is what this app does.** The two-command verdict after any project

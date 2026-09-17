@@ -115,7 +115,7 @@ Notable GL extensions: ASTC LDR compression, `GL_EXT_YUV_target`, `GL_OVR_multiv
 | Field | Value | Source |
 |---|---|---|
 | MemTotal | **1,739,624 kB** (≈1.66 GiB) | `/proc/meminfo` |
-| Physical RAM | **2 GB** *(inferred — MemTotal excludes VPU/GPU/secure carveouts)* | derived |
+| Physical RAM | **2 GB** — *measured, not inferred* | factory menu front page: `DDR/EMMC 2GB/16GB`. The ~340 MB shortfall vs MemTotal is VPU/GPU/secure carveout |
 | zram swap | 1,023,996 kB (≈1000 MiB), device `zram0` | `/proc/meminfo` SwapTotal, `/sys/block` |
 | Dalvik heap | 384 MB | `dalvik.vm.heapsize` |
 | Low-RAM device | no | feature `android.hardware.ram.normal` |
@@ -123,7 +123,9 @@ Notable GL extensions: ASTC LDR compression, `GL_EXT_YUV_target`, `GL_OVR_multiv
 
 ## 6. Storage and partitions
 
-Single **eMMC** (`mmcblk0`, with `mmcblk0boot0`/`boot1`). No SD card slot (`nosdcard`).
+Single **16 GB eMMC** (`mmcblk0`, with `mmcblk0boot0`/`boot1`) — capacity from the factory menu
+front page (`DDR/EMMC 2GB/16GB`), since the raw size is unreadable from shell (§14). No SD card
+slot (`nosdcard`).
 
 | Mount | Size | Used | Device |
 |---|---|---|---|
@@ -459,6 +461,53 @@ adb shell 'dumpsys display | grep -o "mSupportedHdrTypes=\[[^]]*\]"'
 rewriting fundamentally cannot address (no HDR10 base layer to fall back to). If it half-works,
 nothing is lost and the app still covers the gap.
 
+#### The project list — read programmatically, 2026-09-17
+
+**It is readable without root and without touching the TV's remote.** `FactoryMenuActivity` is
+`exported="true"` with an `android.intent.action.MAIN` filter, so it can be launched over adb,
+driven with `input keyevent`, and read with `uiautomator dump` (commands in §15). Navigation is
+read-only: `onPreferenceItemClick` is the only path to the confirm dialog, so arrow keys alone
+can never change anything.
+
+The factory menu's front page also **confirms two values that were inferences in §5 and §6**:
+
+```
+Project Name : IN_VU_UG55AK680N_PWM47K_HV550QUB_F70_V20_XMX_60HZ_12V_6R10W
+Panel Name   : PWM47K_HV550QUB_F70_V20.ini
+DDR/EMMC     : 2GB/16GB          <- physical RAM and flash, measured not derived
+Software     : V3.47.0
+```
+
+**The list holds 304 projects** (it wraps at 304). The current one is **#179**, flagged
+`select`:
+
+```
+179  IN_VU_UG55AK680N_PWM47K_HV550QUB_F70_V20_XMX_60HZ_LCD_12V_6R10W.ini      <- CURRENT
+193  IN_VU_UG55AK680N_PWM47K_HV550QUB_F70_V20_XMX_60HZ_LCD_12V_6R10W_DV.ini   <- same + _DV
+```
+
+**#193 is character-for-character identical to #179 with `_DV` appended.** Same model
+(`UG55AK680N`), same panel *and panel revision* (`HV550QUB_F70_V20`), same backlight driver
+(`PWM47K`), same `XMX`, `60HZ`, `LCD`, `12V`, `6R10W`. This is the exact hardware twin, which
+**removes the wrong-panel-calibration risk** that the rest of this section warns about — that
+warning applies to every other candidate, not to #193.
+
+Other DV/Dolby-named projects, none of which match this panel:
+
+| # | Project | Why not |
+|---|---|---|
+| 2, 20, 21, 71 | `*_Bandra_OLED_*_Dolby.ini` | **OLED** panel — wrong display technology entirely |
+| 81 | `EU_Cottongreen_BOE_HV550QUB_E1D_AD82088_Dolby.ini` | HV550QUB but revision **E1D**, not F70_V20 |
+| 90, 200 | `…HV650QUB_E72…_DV.ini`, `…HV750QUB_E95…_DV.ini` | 65"/75" panels |
+| 114, 131 | `…HV650QUB_F70_60HZ_LCD_XMX_{DV,DOLBY}.ini` | same F70/XMX family but 65" |
+
+Konka clearly ships **paired projects** — the same hardware with and without Dolby (114 vs 77,
+131 vs 55, 193 vs 179). That pairing is itself evidence that the difference between them is
+Dolby provisioning rather than hardware.
+
+*Caveat on completeness:* entries 1–243 and 278–283 were captured; roughly 244–277 and 284–304
+were not individually recorded. #193 is an exact match, so the survey was not continued.
+
 #### Next step when picking this up again
 
 Static analysis is done — the app has been decompiled and it holds nothing further. `ProjectIdLogic`
@@ -664,6 +713,34 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 ```
 
 Then: `grep -iE "md5|dolby|projectid|picture_mode" strings.txt | sort -u`
+
+**Reading the factory menu programmatically** — no root, no remote. `FactoryMenuActivity` is
+exported, so launch it, drive it with key events and read it with `uiautomator`. Arrow keys only:
+never send `KEYCODE_DPAD_CENTER` inside the Project ID list, because that opens the confirm
+dialog whose submit path wipes user data.
+
+```sh
+adb shell am start -n com.toptech.tvfactory/.FactoryMenuActivity
+adb shell input keyevent KEYCODE_DPAD_DOWN      # navigate; CENTER only outside the PID list
+adb exec-out uiautomator dump /dev/tty | python3 ui.py
+adb shell input keyevent KEYCODE_BACK           # leave; then KEYCODE_HOME
+```
+
+`ui.py` — prints the selected row plus all visible text, which is what makes the list readable:
+
+```python
+import re, sys
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+nodes = sys.stdin.read().split('<node')
+items = [(re.search(r'\btext="([^"]*)"', n).group(1), 'selected="true"' in n)
+         for n in nodes if re.search(r'\btext="([^"]*)"', n)
+         and re.search(r'\btext="([^"]*)"', n).group(1).strip()]
+print("SELECTED:", [t for t, s in items if s] or "(none)")
+for t, s in items: print(("  >> " if s else "     ") + t)
+```
+
+Route to the list: **Factory Setting → Project ID** (9 × `DPAD_DOWN` from `Test Pattern`).
+Verify `SELECTED: ['Project ID']` before the single `CENTER` that opens it.
 
 For the logic rather than the constants, decompile with jadx (~1 min for this APK):
 
