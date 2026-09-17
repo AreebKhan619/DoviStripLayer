@@ -52,10 +52,22 @@ in the layer underneath.** That single fact explains every symptom in this proje
 | Android codec list | **no** `video/dolby-vision` codec registered | `ro.media.xml_variant.codecs=_4k_3` → `media_codecs_4k_3.xml`, which includes `media_codecs_realtek_video_4k_2.xml` + `media_codecs_realtek_audio_basic.xml`. Full text of that chain contains zero `dolby-vision`. **Resolve the `<Include>` chain first** — an earlier check against `media_codecs_realtek_video_4k.xml` was the wrong file, and decoders declare formats as nested `<Type>` children, so grepping for a `type="…"` attribute silently finds nothing. |
 | Kernel / VPU firmware | **DV/EDR driver loaded and live** | `/sys/class/dolbyvisionEDR/dolbyvisionEDR0/` registered at boot. Character-device class node (has `dev`), SELinux-denied to shell, **no tunable attributes**. |
 
-The BSP itself is fully DV-capable: `/vendor/etc/` ships `dvhe.st`, `dvhe.stn`, `dvhe.dtr`,
-`dvav.se` and `dav1.10` as `video/dolby-vision` decoders (OMX **and** Codec2, secure and
-non-secure) inside the `_4k_1 / _4k_2 / _4k_4 / _4k_5 / _4k_6 / _4k_14` variant files. Same
-vendor image as DV-capable Vu models — DV is simply configured out for this SKU.
+**The silicon itself decodes DV at 4K60 — this is measured, not inferred.** Five of the
+thirteen `*rtd6748*` files in `/vendor/etc` (`media_codecs_performance_4k_2_rtd6748.xml`,
+`_4k_5_`, `c2_4k_2_`, `c2_4k_11_`, `c2_4k_`) declare `performance-point-3840x2160 = 60-60` and
+`performance-point-1920x1080 = 120-120` for `video/dolby-vision`; the one this SKU selects
+(`_4k_3_rtd6748`) declares none. Performance-point files record capability measured on real
+hardware, so they cannot exist for a codec the chip can't run. The matching decoder components
+(`dvhe.st`, `dvhe.stn`, `dvhe.dtr`, `dvav.se`, `dav1.10` — OMX and Codec2, secure and
+non-secure) live in the `_4k_1 / _4k_2 / _4k_4 / _4k_5 / _4k_6 / _4k_14` codec variants. Note
+`dvhe.dtb` (**profile 7**) is absent everywhere: even DV-enabled SKUs of this chip would not
+decode P7 dual-layer natively — relevant to limitation 1 below.
+
+So no silicon is missing; the gate is licensing and provisioning. The immovable part is not the
+codec XML but the **Dolby display-management tuning data**, which is generated during Dolby's
+certification of a specific TV model and was never produced for this one — enabling the decoder
+would feed a mapping stage with nothing to map to. See `docs/DEVICE-REPORT.md` §11 for the
+measured figures and the four-gate breakdown.
 
 **Dolby *Audio* IS licensed and working on this TV — don't confuse the two.** Speaker and
 HDMI-ARC both advertise `ENCODING_AC3`, `ENCODING_E_AC3`, `ENCODING_AC4`,

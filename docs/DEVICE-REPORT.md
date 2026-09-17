@@ -258,11 +258,72 @@ SELinux-denied to shell, exposing an interface to the vendor media HAL. It has *
 attributes** — there is no Realtek equivalent of Amlogic's `dolby_vision_policy` /
 `dolby_vision_enable`. Do not go looking for `/sys/class/amdolby_vision/`; wrong vendor.
 
-The BSP is fully DV-capable: `/vendor/etc` ships `dvhe.st`, `dvhe.stn`, `dvhe.dtr`, `dvav.se`
-and `dav1.10` as `video/dolby-vision` decoders (OMX **and** Codec2, secure and non-secure)
-inside the `_4k_1 / _4k_2 / _4k_4 / _4k_5 / _4k_6 / _4k_14` variant files. This SKU loads
-`_4k_3`, which has none of them. `FW_DVLOGO_a/b` partitions exist as part of the common board
-layout.
+### 11.1 The silicon supports Dolby Vision — measured, not inferred
+
+**The RTD2885N decodes Dolby Vision at 4K60. Realtek measured it on this exact chip.**
+
+Android's `media_codecs_performance_*.xml` files hold *measured* capability: performance points
+a vendor declares after running the codec on real hardware, which CTS validates on any device
+that exposes the codec. A vendor cannot declare an operating point for a codec the silicon
+cannot run. Of the thirteen `/vendor/etc` files carrying the **`rtd6748`** suffix — this chip —
+five contain Dolby Vision entries:
+
+| Performance profile for this SoC | `dolby-vision` entries |
+|---|---|
+| `media_codecs_performance_4k_2_rtd6748.xml` | 10 |
+| `media_codecs_performance_4k_5_rtd6748.xml` | 10 |
+| `media_codecs_performance_c2_4k_2_rtd6748.xml` | 10 |
+| `media_codecs_performance_c2_4k_11_rtd6748.xml` | 10 |
+| `media_codecs_performance_c2_4k_rtd6748.xml` | 10 |
+| **`media_codecs_performance_4k_3_rtd6748.xml`** ← **selected by this TV** | **0** |
+
+The declared figures are full-rate, not placeholders:
+
+```xml
+<MediaCodec name="OMX.realtek.video.dvhe.st.decoder" type="video/dolby-vision" update="true">
+    <Limit name="performance-point-1920x1080" range="120-120" />
+    <Limit name="performance-point-3840x2160" range="60-60" />
+</MediaCodec>
+```
+
+Identical points for `dvhe.stn`, `dvhe.dtr` and `dav1.10`; `dvav.se` is 1080p120 only. All five
+also exist in `.secure` form for DRM playback. **The only difference between this TV and a
+DV-capable set built on the same silicon is which profile number the SKU selects** — `_4k_3`
+rather than `_4k_2` or `_4k_5`.
+
+By Dolby's codec-string convention the five map to profiles **5** (`dvhe.stn`), **8**
+(`dvhe.st`), **4** (`dvhe.dtr`), **9** (`dvav.se`) and **10** (`dav1.10`). Note what is
+**absent: `dvhe.dtb`, profile 7** — even DV-enabled SKUs of this chip would not decode P7
+dual-layer UHD-BD remuxes natively. (Profile mapping is from the standard Dolby naming
+convention, not read off the device.)
+
+The corresponding decoder declarations live in the `_4k_1 / _4k_2 / _4k_4 / _4k_5 / _4k_6 /
+_4k_14` codec variant files, OMX and Codec2, secure and non-secure. `FW_DVLOGO_a/b` partitions
+exist as part of the common board layout.
+
+### 11.2 What actually gates it
+
+No silicon is missing. The limitation is four gates of very different hardness:
+
+| # | Gate | Nature | Movable? |
+|---|---|---|---|
+| 1 | Codec manifest selects `_4k_3` | pure configuration | conceptually a one-property change |
+| 2 | Display HAL advertises HDR10/HLG only | configuration tied to panel provisioning | same class |
+| 3 | **Dolby display-management tuning + licence** | **data that was never generated for this model** | **no — cannot be synthesized** |
+| 4 | Locked bootloader + enforcing verity | device policy | no (§13) |
+
+Gate 3 is the real wall. DV's display-management stage maps the RPU's dynamic metadata onto a
+specific panel's measured peak luminance, black level, primaries and cross-talk. Those values
+are produced by Dolby's certification of a particular TV model. This model was never certified,
+so enabling the decoder would feed a mapping stage with nothing to map to.
+
+The panel is **not** the disqualifier it looks like: 500 nits is low-end, but Dolby Vision
+ships on panels in that range — it is an end-to-end format, not a brightness threshold. The
+binding constraint is certification, not nits.
+
+So "firmware is limiting it" is accurate in that the chip is fully capable — but the limit is
+the executed form of a commercial decision, not an oversight or a forgotten switch, and one
+layer of it is *absent data* rather than a disabled feature.
 
 **Dolby Audio is licensed on this unit (§9); Dolby Vision is not.** These are separately
 licensed, separately certified products, and "Dolby Audio yes, Dolby Vision no" is a standard
@@ -397,6 +458,7 @@ Every load-bearing claim and the independent sources that agree on it.
 | No `video/dolby-vision` codec | full text read of `media_codecs_realtek_video_4k_2.xml`; root `media_codecs_4k_3.xml` include list; `grep -ic dolby-vision` = 0 |
 | **Dolby Audio present** | `dumpsys audio` runtime encodings on speaker *and* hdmi_arc; `/vendor/etc/audio/sku_x/audio_policy_configuration.xml` declares the identical five formats; `ro.boot.product.vendor.sku=x` selects that file |
 | DV driver live in kernel | `/sys/class/dolbyvisionEDR/dolbyvisionEDR0/` present, created at boot, has a `dev` attribute |
+| **The SoC itself decodes DV at 4K60** | five `*rtd6748*` performance profiles declare `performance-point-3840x2160 = 60-60` for `video/dolby-vision` (measured capability, CTS-validated class of file); the profile this SKU selects declares none; DV decoder components exist in the `_4k_1/_4k_2/_4k_4/_4k_5/_4k_6/_4k_14` codec variants |
 | Bootloader locked / verity on | `ro.boot.flash.locked=1`; `ro.boot.verifiedbootstate=green`; `ro.boot.veritymode=enforcing`; all system mounts are `dm-*` |
 | Widevine present | vendor APEX `com.google.android.widevine.nonupdatable.apex`; registered AIDL `IDrmFactory/widevine` |
 
