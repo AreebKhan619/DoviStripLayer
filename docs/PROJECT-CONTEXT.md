@@ -49,13 +49,25 @@ in the layer underneath.** That single fact explains every symptom in this proje
 | Layer | State | Evidence |
 |---|---|---|
 | Display / panel | HDR10 + HLG only, **no DV** | `dumpsys display` → `hdrCapabilities HdrCapabilities{mSupportedHdrTypes=[2, 3], mMaxLuminance=500.0}`. In `Display.HdrCapabilities`, 1=DOLBY_VISION, 2=HDR10, 3=HLG, 4=HDR10_PLUS — type 1 absent. Also `supportedColorModes=[0]`, `mHdrConversionMode=HDR_CONVERSION_SYSTEM`. |
-| Android codec list | **no** `video/dolby-vision` codec registered; zero Dolby system properties | `ro.media.xml_variant.codecs=_4k_3`, so `media_codecs_4k_3.xml` is the loaded root; neither it nor `media_codecs_realtek_video_4k.xml` contains a `dolby-vision` entry. |
+| Android codec list | **no** `video/dolby-vision` codec registered | `ro.media.xml_variant.codecs=_4k_3` → `media_codecs_4k_3.xml`, which includes `media_codecs_realtek_video_4k_2.xml` + `media_codecs_realtek_audio_basic.xml`. Full text of that chain contains zero `dolby-vision`. **Resolve the `<Include>` chain first** — an earlier check against `media_codecs_realtek_video_4k.xml` was the wrong file, and decoders declare formats as nested `<Type>` children, so grepping for a `type="…"` attribute silently finds nothing. |
 | Kernel / VPU firmware | **DV/EDR driver loaded and live** | `/sys/class/dolbyvisionEDR/dolbyvisionEDR0/` registered at boot. Character-device class node (has `dev`), SELinux-denied to shell, **no tunable attributes**. |
 
 The BSP itself is fully DV-capable: `/vendor/etc/` ships `dvhe.st`, `dvhe.stn`, `dvhe.dtr`,
 `dvav.se` and `dav1.10` as `video/dolby-vision` decoders (OMX **and** Codec2, secure and
 non-secure) inside the `_4k_1 / _4k_2 / _4k_4 / _4k_5 / _4k_6 / _4k_14` variant files. Same
 vendor image as DV-capable Vu models — DV is simply configured out for this SKU.
+
+**Dolby *Audio* IS licensed and working on this TV — don't confuse the two.** Speaker and
+HDMI-ARC both advertise `ENCODING_AC3`, `ENCODING_E_AC3`, `ENCODING_AC4`,
+`ENCODING_DOLBY_TRUEHD` and `ENCODING_DOLBY_MAT` (`dumpsys audio`), independently confirmed by
+`/vendor/etc/audio/sku_x/audio_policy_configuration.xml` (selected by
+`ro.boot.product.vendor.sku=x`). Dolby audio is decoded by the **audio DSP behind the audio
+HAL** — the `FW_AKERNEL` firmware partitions — and **never passes through MediaCodec**, which
+is why `media_codecs_realtek_audio_basic.xml` is nearly empty. An empty codec manifest is not
+evidence of absence when the feature lives in a different layer; a first pass here wrongly
+concluded "no Dolby licence at all" from exactly that mistake. Dolby Audio and Dolby Vision are
+separately licensed and separately certified — "audio yes, vision no" is a standard product
+tier, which is why Realtek ships a `media_codecs_dolby_audio_only.xml` for it.
 
 **Why hybrids (P8.1) don't fall back.** The fallback contract lives in the container:
 `dv_bl_signal_compatibility_id = 1` in the DV configuration record means "the base layer is
@@ -225,7 +237,10 @@ blocks, mid-cluster range starts) degrades to pass-through rather than corruptin
 5. **HLS fallback mode** still has live-window UX (no real seeking, subs dropped) — inherent.
 6. **P5 → SDR** remains out of scope by user decision (needs slow tonemap re-encode; could be
    an optional overnight batch mode for local files).
-7. APK size: per-ABI splits or arm64-only build would drop ~50MB.
+7. APK size: per-ABI splits would drop ~50MB — but **the target TV is 32-bit only**, so the
+   ABI to keep is **`armeabi-v7a`**. An **arm64-only build would not run at all**
+   (`ro.product.cpu.abilist64` is empty, `ro.zygote=zygote32`, there is no `/system/lib64`,
+   `uname -m=armv8l`). See `docs/DEVICE-REPORT.md` §3.1.
 8. Release signing: currently debug-signed only (fine for sideloading).
 
 ## Repo map
@@ -233,5 +248,8 @@ blocks, mid-cluster range starts) degrades to pass-through rather than corruptin
 - Design spec: `docs/superpowers/specs/2026-09-13-dv-strip-player-design.md`
 - Implementation plan: `docs/superpowers/plans/2026-09-13-dv-strip-player.md`
 - This document: `docs/PROJECT-CONTEXT.md`
+- Full hardware/platform report for the target TV: `docs/DEVICE-REPORT.md` (SoC, CPU/ABI, GPU,
+  display, full codec tables, audio, DRM, boot security, plus a cross-confirmation ledger and
+  the commands to regenerate it)
 - App code: `app/src/main/java/com/dvstrip/player/` (10 files, each single-purpose)
 - Tests + fixtures: `app/src/test/`
