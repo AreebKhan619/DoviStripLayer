@@ -356,6 +356,53 @@ the partitions it writes are mounted **rw**. This is a **vendor-sanctioned path 
 neither root nor an unlocked bootloader** — which is exactly why the earlier "no on-device
 workaround exists" conclusion was wrong. The locked bootloader never blocked this route.
 
+#### What the factory app actually does — read from its own bytecode
+
+Both APKs are world-readable under `/system/app`, so they can be pulled and their DEX string
+tables parsed without root (method in §15). That yields three concrete facts.
+
+**1. "DV MD5" is the Dolby Vision picture-mode calibration table.** The app tracks four
+checksums, and they name themselves:
+
+```
+picture_mode_pq_md5        picture_mode_pq_hdr_md5
+picture_mode_pq_osd_md5    picture_mode_dv_md5      <-- the one reported absent
+```
+
+with helpers `getFileMd5`, `md5DV`, `md5PQ`, `md5PQHDR`, `md5PQOSD`, `isSupportDolbyHDR`,
+`getDolbyHdrPicMode`, `HDR_TYPE_DOLBY`. So **DV MD5 is the checksum of a file holding the DV
+picture-mode tuning table**, sitting beside the SDR, HDR and OSD picture tables — precisely the
+per-panel Dolby display-management calibration. "DV MD5 absent" means *that table is not
+present in the currently selected project's model config*, which fits the `4k_2` → `_4k_3`
+downgrade exactly.
+
+**2. The project list is served live by a running vendor HIDL service**, not hardcoded:
+
+```
+vendor.realtek.rtkconfigs@1.0::IRtkProjectConfigs/default   (registered, running)
+```
+
+The app calls `getProjectIdNum`, `getProjectIdName`, `getCurrentProjectId`, `getProjectIdSelect`;
+`FactoryTools-GTV` carries a `ProjectIDActivity` with `ProjectIdListLength:` and
+`Failed to set ProjectID`. **The factory app will therefore display real project names on
+screen** — the authoritative list cannot be read from shell, because
+`/mnt/vendor/tvconfigs/model/` and `/mnt/vendor/impdata/tvconfigs/model` are both denied.
+
+**3. The wipe is real and intentional:** the strings include `clear data and reboot`,
+`NEED_REBOOT`, `UPDATED_NEED_REBOOT`, `RestoreBootparam000`.
+
+#### The consequence for strategy
+
+The app **reports** the MD5 (`getFileMd5`, `initMD5`); nothing in it suggests it can author or
+import a DV table. So the lever is **not** "provision DV data" — it is "select a project whose
+model config already ships one."
+
+And because that table is *panel-specific calibration*, a project built for a different panel
+carries tuning for that panel's peak luminance and primaries. **Working DV with wrong colour is
+a genuine third outcome**, distinct from both today's washed-out state and a clean success. If
+the list exposes model names or sizes, prefer the closest sibling to this set — roughly 55-inch
+(§7), 500-nit, same panel family — over an arbitrary DV-bearing entry.
+
 **Objective test after any project change — two commands, no guesswork:**
 
 ```sh
@@ -378,6 +425,17 @@ adb shell 'dumpsys display | grep -o "mSupportedHdrTypes=\[[^]]*\]"'
 **If it works, it retires this app entirely — and additionally fixes Profile 5**, which byte
 rewriting fundamentally cannot address (no HDR10 base layer to fall back to). If it half-works,
 nothing is lost and the app still covers the gap.
+
+#### Next step when picking this up again
+
+Not more static analysis — **the project list itself**, which is only visible on the TV. Open
+the factory app's Project ID screen and record the entries plus the current selection. If the
+names identify models or panels, that is enough to choose a safe candidate *and* gives a
+known-good value to return to.
+
+Going further into the code would need a real decompiler (`jadx`); the DEX string table shows
+constants, never logic. The question worth that effort is whether `ProjectIdLogic` filters or
+flags DV-capable projects, which would turn candidate selection from guesswork into a lookup.
 
 ### 11.4 What holds regardless of the above
 
@@ -528,7 +586,44 @@ adb shell 'dumpsys display | grep -o "mSupportedHdrTypes=\[[^]]*\]"'  # success 
 
 # Partition layout
 adb shell 'ls /dev/block/by-name/'
+
+# The factory apps — world-readable, pullable without root
+adb shell 'pm path com.toptech.tvfactory; pm path com.toptech.factorytoolsgtv'
+adb pull /system/app/TopTvFactory/TopTvFactory.apk
+adb pull /system/app/FactoryTools-GTV/FactoryTools-GTV.apk
+adb shell 'lshal | grep -i rtkconfigs'        # -> IRtkProjectConfigs/default, running
 ```
+
+No `jadx` is needed to read the constants — parse the DEX string table directly. Save as
+`dexstr.py` and run `python3 dexstr.py TopTvFactory.apk > strings.txt`:
+
+```python
+import sys, zipfile, struct
+def uleb(b, i):
+    r = s = 0
+    while True:
+        x = b[i]; i += 1; r |= (x & 0x7f) << s
+        if not x & 0x80: return r, i
+        s += 7
+def dex_strings(d):
+    if d[:4] != b'dex\n': return []
+    n, off = struct.unpack_from('<II', d, 56)          # string_ids_size, string_ids_off
+    out = []
+    for k in range(n):
+        so = struct.unpack_from('<I', d, off + 4 * k)[0]
+        _, p = uleb(d, so)
+        out.append(d[p:d.index(b'\x00', p)].decode('utf-8', 'replace'))
+    return out
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')   # required on Windows consoles
+with zipfile.ZipFile(sys.argv[1]) as z:
+    seen = set()
+    for nm in z.namelist():
+        if nm.endswith('.dex'):
+            for s in dex_strings(z.read(nm)):
+                if s not in seen: seen.add(s); print(s)
+```
+
+Then: `grep -iE "md5|dolby|projectid|picture_mode" strings.txt | sort -u`
 
 ## 16. Cross-confirmation ledger
 
@@ -549,6 +644,8 @@ Every load-bearing claim and the independent sources that agree on it.
 | DV driver live in kernel | `/sys/class/dolbyvisionEDR/dolbyvisionEDR0/` present, created at boot, has a `dev` attribute |
 | **The SoC itself decodes DV at 4K60** | five `*rtd6748*` performance profiles declare `performance-point-3840x2160 = 60-60` for `video/dolby-vision` (measured capability, CTS-validated class of file); the profile this SKU selects declares none; DV decoder components exist in the `_4k_1/_4k_2/_4k_4/_4k_5/_4k_6/_4k_14` codec variants |
 | **The declared project tier is the Dolby tier, and was downgraded at runtime** | `ro.boot.variant.codecs=4k_2` (bootloader) vs `ro.media.xml_variant.codecs=_4k_3` (in force); `media_codecs_4k_3.xml` include list is `media_codecs_4k_2.xml`'s minus `…_dolby_vision_4k.xml` and `…_audio_dolby.xml`; `mediainit.rc` shows the value is set at runtime, not built in |
+| **"DV MD5" = the DV picture-mode calibration table** | `picture_mode_dv_md5` alongside `picture_mode_pq_md5` / `_pq_hdr_md5` / `_pq_osd_md5` in the factory app's DEX string table, with `getFileMd5`, `md5DV`, `isSupportDolbyHDR`, `getDolbyHdrPicMode` |
+| Project ID is served at runtime, list not in the APK | `lshal` shows `vendor.realtek.rtkconfigs@1.0::IRtkProjectConfigs/default` registered and running; app calls `getProjectIdNum` / `getProjectIdName` / `getCurrentProjectId`; `FactoryTools-GTV` has `ProjectIDActivity`, `ProjectIdListLength:` |
 | Bootloader locked / verity on | `ro.boot.flash.locked=1`; `ro.boot.verifiedbootstate=green`; `ro.boot.veritymode=enforcing`; all system mounts are `dm-*` |
 | Widevine present | vendor APEX `com.google.android.widevine.nonupdatable.apex`; registered AIDL `IDrmFactory/widevine` |
 

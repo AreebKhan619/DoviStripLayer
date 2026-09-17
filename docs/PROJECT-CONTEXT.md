@@ -109,12 +109,23 @@ the bootloader says this unit should be on the **Dolby** tier:
 `media_codecs_realtek_audio_dolby.xml`. Everything else is identical. So this is a Dolby-tier
 unit that got downgraded at boot by `/vendor/bin/mediainit` (see `/vendor/etc/init/mediainit.rc`).
 The likely trigger — **hypothesis, not proven** — is that the factory app reports **DV MD5
-absent**: the DV provisioning blob is missing, so media init fails safe.
+absent**, so media init fails safe. Reading the factory APK's DEX string table (it is
+world-readable at `/system/app/TopTvFactory/`) pins down what that means: the app tracks
+`picture_mode_dv_md5` beside `picture_mode_pq_md5`, `picture_mode_pq_hdr_md5` and
+`picture_mode_pq_osd_md5`. **"DV MD5" is the checksum of the Dolby Vision picture-mode
+calibration table** — the per-panel display-management tuning — and it is missing for the
+currently selected project.
 
 The factory app **`com.toptech.tvfactory`** exposes **Project ID** selection, which drives that
 provisioning and writes partitions mounted rw (`/mnt/vendor/factory`, `/mnt/vendor/impdata`).
 That is a vendor-sanctioned path needing **neither root nor an unlocked bootloader** — the
-locked bootloader never blocked it. Full analysis and the risk warnings are in
+locked bootloader never blocked it. The project list is served at runtime by
+`vendor.realtek.rtkconfigs@1.0::IRtkProjectConfigs` (running), so it is visible in the app's UI
+but not readable from shell (`/mnt/vendor/tvconfigs/model/` is denied).
+
+Because the DV table is *panel-specific* calibration, a project built for another panel may
+enable DV with **wrong colour** — a third outcome distinct from both success and today's
+washed-out state. Full analysis, the APK method and the risk warnings are in
 `docs/DEVICE-REPORT.md` §11.2–11.3.
 
 **Until that is proven to work, rewriting the bytes above the decoder remains the only
